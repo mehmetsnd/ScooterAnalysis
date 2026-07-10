@@ -1,0 +1,35 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Python Paketleme / Derleme (Otomatik Üretilenler)
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Çevresel Değişkenler
+.env
+# NOT: .env.example Git'e gitmeli, bu yüzden ignore edilmedi!
+
+# Test ve Tip Kontrolü
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Veri ve Çıktılar (Başındaki / işareti sadece kök dizindekileri kapsar)
+/data_raw/
+/data_cleaned/
+/data/
+/out/
+*.log
+
+# IDE ve İşletim Sistemi
+.claude/
+.vscode/
+.idea/
+.DS_Store

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "binbin"
+version = "0.1.0"
+requires-python = ">=3.11"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "mypy>=1.10.0",
+]
+datasets = [
+    "pandas>=2.2.0",
+    "psycopg[binary]>=3.2.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
