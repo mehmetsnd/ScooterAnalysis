@@ -1,13 +1,12 @@
-"""Analiz fonksiyonları — functional core: SAF, I/O yok.
+"""Analiz fonksiyonları — Functional Core (Pure fonksiyonlar, I/O veya Database call yok).
 
-`repo` bir RideQueryRepository (data/repository.py) davranışını sağlayan nesnedir;
-core→data import bağımlılığı doğmasın diye burada **tipsiz** bırakıldı. Aynı
-sebeple `scope` da tipsizdir (AnalysisScope | None) — repo'ya olduğu gibi iletilir,
-`None` = filtre yok. Varsayılan kapsam (DEFAULT_SCOPE) imperative shell'de (cli)
-uygulanır; core burada politika bilmez.
+`repo` parametresi bir RideQueryRepository arayüzüdür. Clean Architecture gereği 
+core -> data bağımlılığını (import) engellemek için burada duck typing kullanıyor ve 
+type hint (ipucu) eklemiyoruz. Aynı şekilde `scope` da tipsizdir ve doğrudan repo'ya paslanır.
+Scope kontrolü (policy) CLI katmanında yapılır; core katmanı "filtre nedir" bilmez.
 
-Ağır agregasyon repo/SQL'dedir; buradaki fonksiyonlar yalnızca yüzde/oran ekleyip
-raporlama dict'ine dönüştürür.
+Tüm ağır SQL aggregation işlemleri (toplama, sayma) database'de yapılır.
+Buradaki fonksiyonlar sadece yüzdelik dilimleri (pct) ekleyip veriyi JSON/Dict haline getirir.
 """
 
 
@@ -17,9 +16,10 @@ def _pct(part: int, whole: int) -> float:
 
 
 def cause_distribution(repo, scope=None) -> dict:
-    """Başarısız sürüşlerin kategori dağılımı + sinyalsiz oranı AYRI satır olarak.
-
-    Sinyalsiz (failure_category IS NULL) kütle uydurulmaz; kendi satırında raporlanır.
+    """Başarısız sürüşlerin arıza kategorilerine göre dağılımı.
+    
+    Önemli: 'Sinyalsiz' (failure_category IS NULL) veriyi kafamıza göre bir 
+    kategoriye uydurmuyoruz; tabloda kendi satırı olarak şeffafça raporluyoruz.
     """
     rows = repo.failure_category_counts(scope)
     total = sum(r["count"] for r in rows)
@@ -41,11 +41,11 @@ def cause_distribution(repo, scope=None) -> dict:
 
 
 def failure_criteria_check(repo, scope=None) -> dict:
-    """`duration_sec < 120 AND distance_m < 60` kriterinin outcome ile uyumu.
-
-    İki kuyruk ayrı sayılır:
-      (a) gizli başarısız = BASARILI ama kritere uyan,
-      (b) araç açıldı hiç gitmedi = distance_m ≈ 0 AND duration_sec > 120.
+    """Sistemdeki 'Başarısız' kuralının (süre < 120sn VE mesafe < 60m) outcome ile kıyası.
+    
+    Burada 2 farklı edge-case (kuyruk) tespit ediyoruz:
+      a) Gizli Başarısız: Veritabanında SUCCESS dönmüş ama kriterlere göre aslında başarısız.
+      b) Hiç Gitmemiş: Mesafe 0 ama sürüş 120 saniyeden uzun sürmüş (açıp unutmuş olabilir).
     """
     c = repo.failure_criteria_counts(scope)
     failed_total = c["failed_total"]
@@ -69,17 +69,17 @@ def failure_criteria_check(repo, scope=None) -> dict:
 
 
 def vehicle_hotspots(repo, scope=None, min_failures: int = 10) -> dict:
-    """En çok başarısızlık üreten araçlar (eşik: min_failures)."""
+    """En çok sorun/arıza çıkaran kronik scooter'ları listeler."""
     rows = repo.vehicle_failure_counts(scope, min_failures)
     return {"min_failures": min_failures, "vehicles": rows}
 
 
 def control_group_comparison(repo, scope=None) -> dict:
-    """Üç grubun healthy_proof oranını yan yana verir (ZORUNLU rapor).
-
-    Gruplar: arıza-metinli / herhangi-bildirimli / bildirimsiz (KONTROL GRUBU).
-    Kontrol grubu olmadan sahte-alarm sayısı yanıltıcıdır: bildirimli araçlar
-    bildirimsizlere göre DAHA AZ toparlanıyorsa, bildirimler gerçek sinyal taşır.
+    """A/B Testi mantığıyla 3 grubun (ariza-metinli, bildirimli, bildirimsiz) 'healthy' oranlarını kıyaslar.
+    
+    Bildirimsiz grup bizim "Control Group" (Kontrol Grubu) verimizdir. Eğer bildirim atan araçlar,
+    hiç bildirim almayan araçlardan daha az toparlanabiliyorsa; bu bildirimlerin gerçek bir 
+    arıza sinyali taşıdığını matematiksel olarak ispatlamış oluruz.
     """
     rows = repo.control_group_stats(scope)
     groups = [
@@ -95,9 +95,10 @@ def control_group_comparison(repo, scope=None) -> dict:
 
 
 def false_fault_summary(repo, scope=None) -> dict:
-    """verdict × hypothesis kırılımı, olay/farklı-araç sayısı, boşa görev toplamı.
-
-    Maliyet: ops_cost_model boşsa "N boşa görev" raporlanır, TL raporlanmaz.
+    """Sahte arızaları verdict x hypothesis bazında kırar; boşa giden görev (wasted mission) sayısını döner.
+    
+    Not: Ops (operasyon) maliyet modeli tanımlanmamışsa sadece boşa giden görev sayısını basar,
+    TL (para) bazında zarar hesabı göstermez.
     """
     rows = repo.false_fault_counts(scope)
     breakdown = [
@@ -121,9 +122,10 @@ def false_fault_summary(repo, scope=None) -> dict:
 
 
 def _cost_from_missions(breakdown: list[dict], cost_rows: list[dict]) -> dict:
-    """ops_cost_model doluysa boşa görev maliyetini hesaplar (para birimiyle).
-
-    Basit v1: sahte-alarm başına 3 görev (PICKUP+WORKSHOP+REDEPLOY) maliyeti toplanır.
+    """Boşa giden saha görevlerinin maliyetini para birimi cinsinden (TL/Euro vb.) hesaplar.
+    
+    V1 Mantığı: Her sahte alarm için ortalama 3 görev (PICKUP, WORKSHOP, REDEPLOY) maliyeti 
+    yakıt ve işçilik üzerinden toplanarak hesaplanır.
     """
     per_mission = {r["mission_type"]: r for r in cost_rows}
     total = 0.0
@@ -139,9 +141,10 @@ def _cost_from_missions(breakdown: list[dict], cost_rows: list[dict]) -> dict:
 
 
 def subregion_hotspots(repo, scope=None, min_rides: int = 2000) -> dict:
-    """Alt bölge (daima (şehir, kod) çifti) başına başarısızlık + sahte-alarm yoğunluğu.
-
-    Yoğunluk 1000 sürüş başınadır. Regülasyon hipotezinin mekânsal kanıtı.
+    """Alt bölgeler (ilçe/mahalle) bazında arıza ve sahte-alarm yoğunluğunu (hotspot) verir.
+    
+    Rate: 1000 sürüş başınadır. Özellikle regülasyon kaynaklı sahte alarmları 
+    harita üzerinde ispatlamak için harika bir veridir.
     """
     rows = repo.subregion_stats(scope, min_rides)
     out = []
@@ -164,11 +167,11 @@ def subregion_hotspots(repo, scope=None, min_rides: int = 2000) -> dict:
 
 
 def hour_region_breakdown(repo, scope=None) -> dict:
-    """Yerel saat × şehir kırılımında başarısızlık oranı.
-
-    Saatler YEREL saattir (repo `AT TIME ZONE country.timezone` uygular). K.Makedonya'da
-    gece yarısı zirvesi saat dilimi hatası DEĞİLDİR (yalnızca 23:00'e kayar); gerçek
-    davranışsal bulgudur ve böyle raporlanır.
+    """Saat ve bölge bazlı kırılım (başarısızlık oranı).
+    
+    Dikkat: Saatler YEREL saattir (DB'de 'AT TIME ZONE' ile çözülür). Örneğin 
+    Makedonya'daki gece yarısı pik'leri bir timezone bug'ı DEĞİLDİR; tamamen 
+    kullanıcı davranışıyla alakalıdır ve raporda olduğu gibi gösterilmelidir.
     """
     rows = repo.hour_region_counts(scope)
     out = [

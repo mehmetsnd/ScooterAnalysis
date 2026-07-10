@@ -1,19 +1,19 @@
-"""Sahte Arıza Alarmı değerlendirmesi — functional core: SAF, I/O yok.
+"""Sahte Arıza (False Fault) Değerlendirme Algoritması — Functional Core (Pure, DB I/O yok).
 
-İŞ PROBLEMİ: Çalışan bir cihaz "arızalı" bildirilirse 3 boşa görev doğar —
-(1) sahadan toplama, (2) atölye kontrolü, (3) sahaya geri bırakma. Bu sırada
-gerçekten arızalı araçlar sahada bekler. Amaç: bunu ÖLÇMEK ve azaltmak.
+İŞ PROBLEMİ: Müşteri cihaz için yersiz yere "arızalı" derse operasyona 3 boşa görev yazar:
+(1) Sahadan toplama (Pickup)
+(2) Atölye kontrolü (Workshop)
+(3) Sahaya geri bırakma (Redeploy)
+Amaç: Sahte alarmları tespit edip operasyonel zararı ölçmek ve minimize etmek.
 
-ADLANDIRMA DİSİPLİNİ: "SAHTE" değil "ŞÜPHELİ". Bu veri kesin hüküm veremez
-(geofence poligonu ve başlangıç koordinatı yok). Enum değerleri şemadakiyle birebir.
+ÖNEMLİ (Adlandırma): Olaylara "SAHTE" değil "ŞÜPHELİ" diyoruz. Çünkü elimizde geofence 
+veya koordinat verisi tam yok, kesin yargı dağıtamayız.
 
-verdict önceliği (ck_verdict_consistency ile uyumlu; görevdeki liste kesin sıralama
-değildir — "değerlendirilemez" durumu diğerlerinden önce gelir ki kontrol grubu
-yalnızca değerlendirilebilir sürüşleri içersin):
-    next_ride yok           → DEGERLENDIRILEMEDI
-    bildirim yok            → BILDIRIM_YOK        (KONTROL GRUBU)
-    bildirim var + sağlam   → SAHTE_ALARM_SUPHESI
-    bildirim var + sağlam değil → GERCEK_ARIZA_SUPHESI
+Değerlendirme (Verdict) Önceliği:
+    next_ride (sonraki sürüş) yoksa -> DEGERLENDIRILEMEDI (Yeterli data yok)
+    şikayet/bildirim yoksa          -> BILDIRIM_YOK (Bizim kontrol/baseline grubumuz)
+    bildirim var + alet sağlamsa    -> SAHTE_ALARM_SUPHESI (Müşteri yalan söylemiş/yanılmış)
+    bildirim var + alet bozuksa     -> GERCEK_ARIZA_SUPHESI (Müşteri haklı)
 """
 
 from dataclasses import dataclass
@@ -34,10 +34,10 @@ FALSE_ALARM_WASTED_MISSIONS = 3
 
 @dataclass
 class FaultAssessment:
-    """Bir sürüşün sahte-arıza değerlendirmesi (DB: false_fault_assessment ile hizalı).
-
-    ops_*_task_id ve assessor_version saha görev verisi / CLI tarafından doldurulur;
-    saf değerlendirme bunları üretmez.
+    """Tek bir sürüş için sahte-arıza değerlendirme sonucu (DB'deki tabloyla hizalıdır).
+    
+    Not: ops_*_task_id gibi saha görevleri sonradan dışarıdan doldurulur; 
+    bu pure fonksiyon sadece analitik değerlendirme (assessment) yapar.
     """
 
     fault_reported: bool
@@ -55,7 +55,7 @@ class FaultAssessment:
 
 
 def _has_fault_text(text: Optional[str]) -> bool:
-    """Metin teknik arıza şikâyeti içeriyor mu? (arıza bildirimi sinyali)"""
+    """Kullanıcının girdiği yorumda teknik bir arıza şikayeti geçiyor mu? NLP regex taraması."""
     return bool(text) and keywords.contains_any(text, keywords.TECHNICAL_KEYWORDS)
 
 
@@ -64,7 +64,7 @@ def _report_evidence(
     comment_text: Optional[str],
     rating: Optional[int],
 ) -> ClassificationSource:
-    """Arıza bildirimini kuran en spesifik kanıt kaynağı; bildirim yoksa NONE."""
+    """Arıza bildiriminin nereden geldiğini (kanıtını) bulur. Hiçbir şey yoksa NONE döner."""
     if _has_fault_text(ride.end_message):
         return ClassificationSource.TEXT_MESSAGE
     if _has_fault_text(comment_text):
@@ -90,10 +90,13 @@ def assess_ride(
     healthy_min_distance_m: float = 200.0,
     healthy_max_gap_min: float = 360.0,
 ) -> FaultAssessment:
-    """Bir başarısız sürüşü, aynı aracın sonraki sürüşüne bakarak değerlendirir.
-
-    `next_ride`: AYNI aracın kronolojik olarak bir sonraki sürüşü (outcome fark etmez).
-    `rating`: sürüşün feedback puanı (varsa) — 1 yıldız bir arıza bildirimi sinyalidir.
+    """Arızalı denilen bir sürüşün sahte mi yoksa gerçek mi olduğunu hesaplar.
+    
+    Bunu anlamak için AYNI aracın bir sonraki sürüşüne (`next_ride`) bakarız. 
+    Eğer araç kısa süre içinde başka biri tarafından kiralanıp uzun mesafe 
+    gidebilmişse, önceki kullanıcının arıza bildirimi sahtedir (healthy_proof = True).
+    
+    Ayrıca `rating` (yıldız) = 1 ise bunu potansiyel arıza şikayeti sayarız.
     """
     report_evidence = _report_evidence(ride, comment_text, rating)
     fault_reported = report_evidence is not ClassificationSource.NONE

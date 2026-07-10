@@ -1,12 +1,10 @@
-"""Repository arayüzü — core yalnızca bu Protocol'e (davranışa) bağımlıdır, somut
-implementasyona değil.
+"""Repository Arayüzü (Protocol) — Dependency Inversion (DIP) kuralını burada uyguluyoruz.
 
-Ağır agregasyon SQL'de yapılır: repo, DB'de hesaplanmış satırları (list[dict])
-döndürür; core/analysis yalnızca yüzde/oran ekleyip raporlama dict'ine dönüştürür.
+Core (Analiz) katmanı doğrudan veritabanına bağlanmaz, sadece bu Protocol'e (arayüze) güvenir.
+Yarın Postgres yerine MongoDB veya Mock bir database gelse bile Core katmanındaki tek satır kod değişmez.
 
-`AnalysisScope` id-tabanlıdır (country_ids / city_ids). `None` = filtre yok.
-Ülke/şehir ADLARINDAN (config.Scope) id'ye çözme `resolve_scope` ile yapılır —
-bu somut repoya özgüdür (Postgres'te DB lookup, mock'ta sabit eşleme).
+Not: Ağır matematiksel agregasyonları (gruplama vb.) DB katmanına SQL ile yaptırıyoruz.
+Bu arayüzden dönen data, memory'i şişirmeyen hazır list[dict] objeleridir.
 """
 
 from dataclasses import dataclass

@@ -1,13 +1,11 @@
-"""Kapsam konfigürasyonu — TEK KAYNAK.
+"""Projenin Scope (Kapsam) Konfigürasyonları — TEK KAYNAK (Single Source of Truth).
 
-Bu adımda işlenen veri yalnızca Türkiye + İstanbul'dur (406.814 satır). Ama bu
-kapsam bir *konfigürasyon değeridir*, koda gömülü bir dallanma (`if city ==
-"İstanbul"`) DEĞİLDİR. Yarın Bursa eklenecekse yalnızca `DEFAULT_SCOPE` tuple'ları
-değişir; hiçbir fonksiyon dokunulmaz.
+Burada koda hardcode if-else yazmak yerine (örneğin `if city == "İstanbul"`), 
+projeyi konfigürasyon üzerinden yönetiyoruz. Yarın projeye Bursa'yı da katmak istersek 
+koda hiç dokunmadan sadece `DEFAULT_SCOPE` tuple'ını güncellememiz yetecek. Çok daha clean.
 
-`Scope` ülke/şehir ADLARINI taşır (ingest ve CLI girdisi için). Analiz katmanı
-id-tabanlı `AnalysisScope` (data/repository.py) kullanır; CLI/repo adları id'ye
-çözer.
+Not: `Scope` dışarıdan (CLI/CSV) gelen string adları tutar. Analiz katmanı (core) 
+ise id-tabanlı çalışır. Bu çeviriyi Repository katmanında yapıyoruz.
 """
 
 from dataclasses import dataclass
@@ -15,28 +13,28 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Scope:
-    """İşlenecek kapsamın ülke/şehir adları. Boş tuple = filtre yok (bu alanda)."""
+    """İşlenecek kapsam. Tuple'lar boşsa filtreleme yapılmaz (--all mantığı)."""
 
     countries: tuple[str, ...] = ()
     cities: tuple[str, ...] = ()
 
     @property
     def is_unrestricted(self) -> bool:
-        """Hiç filtre yoksa (--all semantiği) True."""
+        """Kapsam filtresi yoksa True döner (tüm data çekilir)."""
         return not self.countries and not self.cities
 
 
-# İstanbul iki idari bölgeye ayrılır (CSV region_name: 'İstanbul Avrupa' /
-# 'İstanbul Anadolu'). Ülke adı CSV country_name ve country.name ile ('Türkiye')
-# birebir eşleşir.
+# İstanbul iki idari bölgeye ayrılır (Avrupa / Anadolu).
+# TODO: Eğer yeni bir şehir/ülke açılışı olursa buraya eklemeyi unutmayın.
 DEFAULT_SCOPE = Scope(
     countries=("Türkiye",),
     cities=("İstanbul Avrupa", "İstanbul Anadolu"),
 )
 
-# --all için: hiçbir filtre uygulanmaz (CSV/DB'nin tamamı).
+# Kısıtlamasız scope (--all flag'i gelirse bu kullanılır).
 UNRESTRICTED_SCOPE = Scope()
 
-# Bu adımda üretilen sınıflandırıcı/değerlendirici sürümü (geri yazımda damgalanır).
+# Veritabanına basarken damgaladığımız classifier/assessor versiyonları.
+# İleride algoritma değişirse "v2" yapıp eski veriyi ayırt edebiliriz.
 CLASSIFIER_VERSION = "v1"
 ASSESSOR_VERSION = "v1"

@@ -1,19 +1,19 @@
-"""CLI giriş noktası — imperative shell (argparse).
+"""Projenin CLI (Command Line Interface) giriş noktası — Imperative Shell.
 
-Çalıştırma (src-layout, PYTHONPATH=src):
+Burada iş mantığı (core logic) bulunmaz; sadece terminalden gelen komutları 
+argparse ile yakalar, ilgili argümanları parse eder ve alttaki modüllere paslarız.
+
+Kullanım örnekleri (PYTHONPATH=src klasöründe):
     python -m binbin.cli ingest   [--data-dir data_raw] [--country ...] [--city ...] [--all]
     python -m binbin.cli classify [--batch-size 10000]  [--country ...] [--city ...] [--all]
     python -m binbin.cli assess   [--country ...] [--city ...] [--all]
     python -m binbin.cli analyze  [--detay] [--derin] [--false-fault] [--charts DIR] ...
 
-Kapsam semantiği (dört komutta da aynı):
-    bayrak yok            → config.DEFAULT_SCOPE (Türkiye + İstanbul Avrupa/Anadolu)
-    --country/--city      → verilen adlar (config'ten değil, argparse'tan)
-    --all                 → filtre yok (CSV/DB'nin tamamı)
-    --country/--city + --all birlikte → hata
-
-Kapsam bir konfigürasyon değeridir; hiçbir şehir/ülke adı fonksiyon imzasına veya
-sorgu metnine gömülmez.
+Scope (Kapsam) Mantığı:
+    Hiçbir bayrak verilmezse   -> config.DEFAULT_SCOPE (Türkiye + İstanbul Avrupa/Anadolu)
+    --country/--city verilirse -> Girilen lokasyonlar çekilir (config'i ezer)
+    --all flag'i verilirse     -> Filtre kalkar, DB'deki tüm data işlenir
+    Not: --all ile lokasyon bayrakları aynı anda kullanılamaz, hata patlatır.
 """
 
 import argparse

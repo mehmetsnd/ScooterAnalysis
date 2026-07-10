@@ -1,16 +1,15 @@
-"""Postgres implementasyonu — Postgres'e özgü TÜM SQL yalnızca bu modülde.
+"""PostgreSQL Implementation (Repository) — Projedeki tüm SQL kodları BURADA yaşar.
 
-Şema DB'de zaten mevcuttur (db/01_reset_ve_kurulum.sql + db/02_false_fault.sql);
-burada ASLA create_all / DROP / migration çalıştırılmaz. Tablolar SQLAlchemy Core
-Table olarak yalnızca belgeleme/programatik insert için tanımlıdır (create_type=False
-ile enum tipleri yeniden oluşturulmaz).
+Uyarı: DB şeması zaten (01_reset_ve_kurulum.sql vb.) SQL dosyalarıyla önceden oluşturulmuştur.
+Burada asla create_all / DROP / migration gibi işlemler YAPMAYIZ (o yüzden create_type=False).
+Tabloları SQLAlchemy'de sadece Python'dan rahatça INSERT/SELECT atabilmek için Table objesi olarak tanımladık.
 
-Ağır agregasyon window function'larla `text()` SQL'de yapılır; repo, DB'de
-hesaplanmış list[dict] döndürür (core yalnızca yüzde/oran ekler).
+Performans Notu: Ağır aggregation (toplama/kruplama/sayma) işlemlerini RAM'de Python ile yapmak yerine 
+pür (pure) SQL içindeki Window Function'lara yıkıyoruz. Repository dışarıya tertemiz list[dict] döner.
 
-`ride` AYLIK PARTITION'lıdır; PK (ride_id, start_time), bağlı tablolar bileşik FK
-(ride_id, ride_start_time). Sorgular partition pruning için daima start_time/city
-filtreler.
+Partitioning: `ride` tablomuz DB seviyesinde AYLIK partition'lıdır. Bu yüzden PK ve FK'ler 
+(ride_id, start_time) şeklinde composite (bileşik) tasarlanmıştır. Partition pruning'in patlamaması için 
+tüm sorgulara her zaman `start_time` veya `city` filtresini inject ediyoruz.
 """
 
 import os

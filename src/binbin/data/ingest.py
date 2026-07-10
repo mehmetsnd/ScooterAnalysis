@@ -1,21 +1,23 @@
-"""Ingest — ham CSV → Postgres (COPY tabanlı).
+"""Ingest (ETL) Süreci — Ham CSV -> PostgreSQL (COPY komutuyla).
 
-Akış (run_ingest):
-  0. data_load satırı aç (RUNNING).
-  1. TRUNCATE stg_rental_raw → CSV'yi COPY ile STREAM et (pandas/bellek YOK).
-  2. Gereken aylık partition'ları oluştur (eksikse).
-  3. Referans tabloları (city / sub_region / end_reason) DİNAMİK doldur — yalnız
-     kapsam içi distinct değerlerden.
-  4. vehicle upsert → ride insert (idempotent, scope-filtreli, timestamp UTC'ye).
-  5. feedback insert (puan veya yorum doluysa).
-  6. Veri kalitesi: satır SİLME, data_quality_flags ile işaretle; end<start → atla.
-  7. ride_default == 0 doğrula; data_load'ı kapat (SUCCESS/FAILED + sayaçlar).
+Süreç (run_ingest):
+  0. `data_load` tablosunda yeni bir satır açıyoruz (RUNNING).
+  1. `stg_rental_raw` (staging) tablosunu TRUNCATE edip, devasa CSV dosyasını RAM'i şişirmeden
+     doğrudan PostgreSQL'in COPY metoduyla içeri akıtıyoruz (stream).
+  2. Gerekli aylık partition'ları (parçaları) dinamik oluşturuyoruz.
+  3. city / sub_region / end_reason gibi yan (referans) tabloları scope dahilinde dinamik dolduruyoruz.
+  4. Vehicle (Araç) UPSERT ve ardından Ride (Sürüş) INSERT yapıyoruz.
+  5. Sürüşle beraber puan/yorum varsa Feedback tablosuna basıyoruz.
+  6. Bozuk datalar (Örn: end_time < start_time) data_quality_flags ile flag'lenip SKIP edilir.
+  7. İşlem bitince `data_load` tablosundaki state'i SUCCESS veya FAILED olarak update edip raporluyoruz.
 
-Zaman kuralı (KESİN): start/end_date_tr metni DAİMA 'Europe/Istanbul' (UTC+3,
-DST yok) kabul edilip timestamptz'e çevrilir — ülke/country.timezone'a göre DEĞİL.
+Önemli Not (Timezone Bug Önlemi):
+CSV'den gelen `start_date_tr` her zaman Europe/Istanbul (UTC+3) kabul edilip direkt 
+timestamptz'e çevrilir. Ülkenin veya bölgenin timezone'u burada dikkate ALINMAZ, kural böyledir.
 
-pandas YALNIZCA burada kullanılabilirdi ama bu modül onu KULLANMAZ: 343 MB dosya
-psycopg copy() ile stream edilir, belleğe alınmaz.
+Performans Notu: Python dünyasında genelde Pandas (df) kullanılır ama bu modül bilerek PANDAS KULLANMAZ!
+Sebebi basit: 300+ MB CSV'yi RAM'e almak yerine psycopg `copy()` ile stream ederek veritabanına basıyoruz. 
+Böylece çok daha az RAM tüketiyor ve çok daha hızlı çalışıyor.
 """
 
 from dataclasses import dataclass, field
@@ -33,7 +35,9 @@ _COPY_CHUNK = 1 << 20  # 1 MB
 
 @dataclass
 class IngestReport:
-    """Ingest sayaçları ve sonucu. status: RUNNING|SUCCESS|FAILED|SKIPPED."""
+    """Ingest (ETL) işleminin metriklerini ve sonucunu tutan sınıf. 
+    State yönetimi: RUNNING | SUCCESS | FAILED | SKIPPED
+    """
 
     data_load_id: int
     file_name: str
@@ -50,10 +54,10 @@ class IngestReport:
 
 
 def list_source_csvs(data_dir: Path = Path("data_raw")) -> list[Path]:
-    """`data_dir` içindeki tüm `.csv` dosyalarını (0/1/çok) ada göre sıralı döndürür.
-
-    Web arayüzü de bunu çağırıp açılır liste doldurabilir; I/O prompt içermez.
-    Klasör yoksa açıklayıcı hata fırlatır.
+    """`data_dir` (default: data_raw) içindeki tüm `.csv` dosyalarını bulup isme göre sıralar.
+    
+    Not: Bu pure bir fonksiyondur, I/O prompt'u sormaz. Sadece data döner.
+    Klasör yoksa patlar (Exception fırlatır).
     """
     if not data_dir.is_dir():
         raise FileNotFoundError(f"Veri klasörü yok: {data_dir}")
@@ -61,10 +65,10 @@ def list_source_csvs(data_dir: Path = Path("data_raw")) -> list[Path]:
 
 
 def find_source_csv(data_dir: Path = Path("data_raw")) -> Path:
-    """`data_dir` içindeki TEK `.csv` dosyasını bulur (sabit isim varsayılmaz).
-
-    0 veya 2+ CSV varsa açıklayıcı hata fırlatır. Çok dosya seçimi için
-    `list_source_csvs` + `cli.main.select_csv` kullanılır.
+    """`data_dir` içindeki TEK `.csv` dosyasını bulur (isminin ne olduğu önemli değil).
+    
+    Eğer klasörde 2 veya daha fazla CSV varsa hangisini alacağını bilemediği için hata patlatır.
+    Çoklu dosya seçimi için CLI'daki `select_csv` metodunu kullanıyoruz.
     """
     csvs = list_source_csvs(data_dir)
     if not csvs:
@@ -76,7 +80,9 @@ def find_source_csv(data_dir: Path = Path("data_raw")) -> Path:
 
 
 def copy_csv_to_staging(engine: Engine, csv_path: Path) -> int:
-    """stg_rental_raw'ı TRUNCATE edip CSV'yi COPY ile stream eder. Yazılan satır sayısı."""
+    """Önceki stg_rental_raw tablosunu TRUNCATE edip (uçurup), CSV'yi psycopg2 COPY metoduyla içeri basar. 
+    Döndüğü değer: DB'ye stream edilen satır sayısı.
+    """
     raw = engine.raw_connection()
     try:
         dbapi = raw.driver_connection  # psycopg.Connection

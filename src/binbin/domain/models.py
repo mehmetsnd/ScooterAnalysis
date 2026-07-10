@@ -1,10 +1,11 @@
-"""Domain modelleri — saf veri taşıyıcıları, DB şemasındaki tablolarla birebir.
+"""Domain (İş Alanı) Modelleri — Sadece saf veri (data) taşıyıcılarıdır (DTO/Entity mantığı).
 
-Not: dataclass kuralı gereği varsayılansız alanlar önce gelir; bu yüzden alan
-sırası şemadan sapabilir ama alan KÜMESİ şemayla birebir aynıdır.
+Not: Dataclass kuralı gereği default değeri (varsayılan) olmayan alanlar yukarıda tanımlanır.
+Bu yüzden field sıralaması veritabanındaki sırayla birebir aynı olmayabilir ama
+içerdikleri veriler DB tablolarıyla birebir eşleşir.
 
-numeric(x,2) kolonları (duration_sec, distance_m, gross_amount) core'da `float`
-olarak taşınır — analiz karşılaştırmaları için yeterli, eşikler zaten float.
+Numeric(x,2) kolonlarını (süre, mesafe, para vb.) core katmanında `float` olarak taşıyoruz.
+Zaten threshold'larımız (eşiklerimiz) float olduğu için analizlerde yeterli oluyor.
 """
 
 from dataclasses import dataclass, field
@@ -25,7 +26,6 @@ from binbin.domain.enums import (
 
 @dataclass
 class Country:
-    """Ülke (DB: country). Seed'li: Türkiye/Bosna/K.Makedonya."""
 
     country_id: int
     source_country_id: int
@@ -38,9 +38,10 @@ class Country:
 
 @dataclass
 class City:
-    """Şehir (DB: city). Doğal anahtar (country_id, source_region_id).
-
-    is_test: region_id=8 ('Test') gerçek sürüş değildir; analizler daima dışlar.
+    """Şehir verisi (DB: city). Doğal anahtarı (country_id, source_region_id).
+    
+    Not: region_id=8 ('Test') olan bölgeler gerçek sürüş değildir. 
+    Analiz katmanında bu verileri her zaman filtreleyip drop ediyoruz.
     """
 
     city_id: int
@@ -54,10 +55,11 @@ class City:
 
 @dataclass
 class SubRegion:
-    """Alt bölge (DB: sub_region). Doğal anahtar (city_id, source_sub_region_id).
-
-    source_sub_region_id TEK BAŞINA benzersiz DEĞİLDİR (591/599/605/623 birden
-    fazla bölgede geçer). Geofence bölgesi için mekânsal proxy.
+    """Alt bölge (DB: sub_region). Doğal anahtarı (city_id, source_sub_region_id).
+    
+    Not: source_sub_region_id kendi başına unique (benzersiz) DEĞİLDİR 
+    (örneğin 591 ID'si birden fazla bölgede geçebilir). Genelde Geofence (sınır) 
+    bölgesi için proxy olarak kullanıyoruz.
     """
 
     sub_region_id: int
@@ -68,10 +70,10 @@ class SubRegion:
 
 @dataclass
 class EndReason:
-    """Sürüş sonlandırma kodu (DB: end_reason). Anlamları BİLİNMİYOR.
-
-    label/category_hint/reason_hint saha ekibi doğrulayana kadar NULL kalır;
-    kod anlamı TAHMİN EDİLMEZ.
+    """Sürüşü sonlandırma kodu (DB: end_reason). Anlamlarını şu an tam BİLMİYORUZ.
+    
+    Saha ekibi reason_id'lerin ne anlama geldiğini doğrulayana kadar
+    label/category_hint gibi alanları NULL bırakıyoruz. Tahmin yürütmek yok.
     """
 
     reason_id: int
@@ -85,7 +87,6 @@ class EndReason:
 
 @dataclass
 class Vehicle:
-    """Araç / skuter (DB: vehicle)."""
 
     vehicle_id: int
     source_ref: str
@@ -98,7 +99,7 @@ class Vehicle:
 
 @dataclass
 class Regulation:
-    """Şehir regülasyonu (DB: regulation). Ceza tutarı ülkeye göre para birimi değiştirir."""
+    """Şehir bazlı regülasyon kuralları (DB: regulation). Ceza tutarı para birimi lokasyona göre değişir."""
 
     regulation_id: int
     city_id: int
@@ -119,10 +120,11 @@ class Regulation:
 
 @dataclass
 class Ride:
-    """Sürüş kaydı — sürüş başına indirgenmiş sinyaller (DB: ride).
-
-    Telemetri alanları (unlock_ack, connection_lost, motor_error_code, ...) mevcut
-    CSV'de YOK → hepsi NULL. Sınıflandırma/analiz kodu NULL'a dayanıklı olmalıdır.
+    """Sürüş verisi (DB: ride). Uygulamanın ana Aggregate Root'udur.
+    
+    ÖNEMLİ: Telemetri alanları (unlock_ack, connection_lost vb.) mevcut CSV'de 
+    bulunmadığı için hepsi NULL gelir. İleride Lead'den bu dataları istersek 
+    diye önden tasarlandı. Kod analizleri bu NULL durumlara karşı güvenli (Null-safe) olmalıdır.
     """
 
     ride_id: int
@@ -165,9 +167,9 @@ class Ride:
 
 @dataclass
 class Feedback:
-    """Sürüş geri bildirimi (DB: feedback). FK bileşik: (ride_id, ride_start_time).
-
-    Puan veya yorumdan en az biri dolu olmalıdır (ck_feedback_not_empty).
+    """Kullanıcı geri bildirimi (DB: feedback). Composite FK: (ride_id, ride_start_time).
+    
+    DB kısıtlaması (Constraint): Puan veya yorumdan en az biri dolu olmak zorundadır.
     """
 
     feedback_id: int
@@ -180,7 +182,7 @@ class Feedback:
 
 @dataclass
 class DataLoad:
-    """Veri yükleme denetim satırı (DB: data_load)."""
+    """ETL süreçleri için veri yükleme audit (denetim) logu (DB: data_load)."""
 
     data_load_id: int
     file_name: str

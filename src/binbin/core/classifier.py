@@ -1,27 +1,24 @@
-"""Sürüş sınıflandırıcı (Classifier v1) — functional core: SAF, I/O yok.
+"""Sürüş Sınıflandırıcı (Classifier v1) — Functional Core (Pure, DB I/O yok).
 
-TEK sürüşe bakar. Yalnızca `outcome == BASARISIZ_HARD` sürüşlere kategori atar.
+Sadece tek bir sürüşe bakar. Ve YALNIZCA `outcome == BASARISIZ_HARD` olan sürüşlere kategori atar.
 
-Öncelik (ilk eşleşen kazanır) — gerekçesiyle:
-  1. payment_status dolu & ≠ OK       → ODEME       (FIELD_SIGNAL)
-  2. user_cancelled is True           → KULLANICI   (FIELD_SIGNAL)
-  3. triggered_regulation_id dolu     → REGULASYON  (FIELD_SIGNAL)
-  4. unlock_ack is False              → TEKNIK      (FIELD_SIGNAL)
-  5. connection_lost / motor / bms /  → TEKNIK      (FIELD_SIGNAL)
-     düşük batarya
-  6. end_message metni → keywords     → (TEXT_MESSAGE)
-  7. comment_text → keywords          → (TEXT_COMMENT)
-  8. hiçbiri                          → (None, None, NONE)
+Eşleşme Önceliği (İlk uyan kazanır):
+  1. payment_status dolu & ≠ OK       -> ODEME       (FIELD_SIGNAL)
+  2. user_cancelled == True           -> KULLANICI   (FIELD_SIGNAL)
+  3. triggered_regulation_id dolu     -> REGULASYON  (FIELD_SIGNAL)
+  4. unlock_ack == False              -> TEKNIK      (FIELD_SIGNAL)
+  5. connection_lost / motor / bms /
+     düşük batarya                    -> TEKNIK      (FIELD_SIGNAL)
+  6. end_message text -> keywords     -> (TEXT_MESSAGE)
+  7. comment_text -> keywords         -> (TEXT_COMMENT)
+  8. Hiçbiri eşleşmezse               -> None (Sinyalsiz)
 
-Adımlar 1–5 mevcut CSV'de hep NULL (telemetri yok); ileriye dönüktür ve kod
-NULL'a dayanıklıdır. Bugün sınıflandırma fiilen 6–7 (metin) üzerinden yürür.
+Not 1: Adım 1-5'teki telemetri dataları elimizdeki mevcut CSV'de yok (NULL). 
+Ama kod ileriye dönük (future-proof) ve Null-safe yazıldı. Şu an sistem fiilen
+6. ve 7. adımlardaki Text/NLP parsing üzerinden yürüyor.
 
-MUTLAK KURAL: sinyalsiz sürüşe kategori UYDURULMAZ. `BILINMIYOR` yoktur → None.
-Başarısızların ~%89'u bu kütledir; analiz katmanı bunları davranışsal çıkarımla
-ele alır (bkz. core/false_fault.py, core/analysis.py).
-
-REASON_CODE kaynağı bilinçli olarak üretilmez: reason_id anlamları BİLİNMİYOR
-(end_reason.category_hint doğrulanmamış). Hint'ler doğrulanınca ayrı bir yol açılır.
+Not 2 (ALTIN KURAL): Sinyalsiz sürüşlere ASLA kategori uydurmuyoruz. Başarısızların 
+%89'u zaten bu kütlede. Bu kütleyi `false_fault.py`'da davranışsal analizle (hypothesis) çözeceğiz.
 """
 
 from typing import NamedTuple, Optional
@@ -48,7 +45,7 @@ _PAYMENT_REASON = {
 
 
 class ClassificationResult(NamedTuple):
-    """(kategori, alt sebep, kaynak). Tuple gibi karşılaştırılabilir."""
+    """(kategori, alt sebep, kaynak). Tuple gibi kıyaslanabilir (Immutable)."""
 
     category: Optional[FailureCategory]
     reason: Optional[FailureReason]
@@ -59,12 +56,11 @@ _NONE_RESULT = ClassificationResult(None, None, ClassificationSource.NONE)
 
 
 def _classify_text(text: str, source: ClassificationSource) -> Optional[ClassificationResult]:
-    """Serbest metni kategoriye eşler. Metin içi öncelik:
-
-    REGULASYON > KULLANICI > SISTEM > TEKNIK
-    (çakışırsa regülasyon kazanır: "yasak bölge" + "gitmiyor" birlikte geçebilir.)
-
-    Eşleşme yoksa None.
+    """Free-text (kullanıcı yorumu veya mesaj) string'ini NLP gibi anahtar kelimelerle parse eder.
+    
+    Öncelik sırası: REGULASYON > KULLANICI > SISTEM > TEKNIK
+    Neden? Çünkü "Yasak bölge olduğu için alet gitmiyor" yazarsa bu Teknik değil, Regülasyon arızasıdır.
+    Bulamazsa None döner.
     """
     if keywords.contains_any(text, keywords.REGULATION_KEYWORDS):
         return ClassificationResult(
@@ -84,7 +80,7 @@ def _classify_text(text: str, source: ClassificationSource) -> Optional[Classifi
 
 
 def _technical_reason(text: str) -> FailureReason:
-    """Teknik metinden alt sebep: kilit → LOCK_JAM, gaz/motor → MOTOR_ERROR, diğer → IOT_FAULT."""
+    """Teknik kategorisine düşen bir metni alt kırılıma böler (Kilit, Motor, Genel IoT)."""
     if keywords.contains_any(text, keywords.LOCK_KEYWORDS):
         return FailureReason.LOCK_JAM
     if keywords.contains_any(text, keywords.MOTOR_KEYWORDS):
@@ -96,7 +92,7 @@ def classify_ride(
     ride: Ride,
     comment_text: Optional[str] = None,
 ) -> ClassificationResult:
-    """Sürüşü sinyallerine göre (kategori, alt sebep, kaynak) sonucuna sınıflandırır."""
+    """Tek bir sürüş objesini alır, sinyallerini tarar ve kategorize eder."""
     if ride.outcome is not RideOutcome.BASARISIZ_HARD:
         return _NONE_RESULT
 

@@ -1,13 +1,14 @@
-"""Grafikler — matplotlib PNG üretimi (imperative shell).
+"""Matplotlib ile PNG grafik/rapor üretimi (Imperative Shell).
 
-matplotlib YALNIZCA bu modülde kullanılır. Plotly'ye DOKUNULMAZ (report.py HTML
-fazına saklı). Her fonksiyon `core/analysis.py` çıktısı dict'i alır, PNG yazar,
-dosya yolunu döndürür.
+KURAL: matplotlib sadece ve sadece bu modülde kullanılır. İleride Plotly vb. 
+interaktif tool'lar gelecekse onlar ayrı modülde yazılır (Örn: report.py).
+Buradaki her fonksiyon `core/analysis.py`'dan dict çıktısını alır, grafiği çizer
+ve kaydedip dosya yolunu string olarak döner.
 
-Tasarım: dataviz metodu — doğrulanmış (colorblind-safe) tek palet, büyüklük ölçen
-grafiklerde tek hue (blue), açıklayıcı Türkçe başlık + alt başlık ("ne gösteriyor"),
-hairline ızgara, ince çubuklar. Her grafik kendi kendini açıklar; ham anahtarlar
-(ariza_metinli, healthy_proof…) Türkçe okunur etikete çevrilir.
+Tasarım Sistemi (DataViz): Colorblind-safe (renk körü dostu) bir palet kullanıyoruz.
+Büyüklük ölçen bar chart'larda tek hue (mavi) tonu basıyoruz, karmaşaya yer yok.
+Grafiklerin başlığı ve alt başlığı ("ne gösteriyor?") Türkçe, net ve okunaklı olmalı.
+Ham dict key'lerini (ariza_metinli vb.) arayüze/grafiğe yansıtırken Türkçeleştirmeyi unutmuyoruz.
 """
 
 from pathlib import Path

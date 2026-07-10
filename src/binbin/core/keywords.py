@@ -1,13 +1,13 @@
-"""Anahtar kelime kümeleri — SAF. Sınıflandırma kuralları koda gömülmez, buradan okunur.
+"""NLP / Keyword kümeleri (Frozenset) — Pure (I/O yok).
+Sınıflandırma kurallarını kodun içine hardcode gömmek yerine buradan yönetiyoruz.
 
-TR + EN + Balkan dilleri (Boşnakça/Makedonca). Eşleştirme daima küçük harfe
-indirgenmiş, aksan-duyarsız normalize edilmiş metin üzerinde yapılır (bkz.
-`normalize`). Kümeler `frozenset` — değişmez.
+Desteklenen diller: TR + EN + Balkan (Boşnakça/Makedonca).
+Not: Buradaki eşleştirmelerin hepsi case-insensitive ve aksan-duyarsız (normalize) çalışır.
 
-> UYARI: "para iadesi istiyorum", "param gitti" gibi metinler ödeme *hatası*
-> DEĞİLDİR — bozuk araca ödeme yapmış kullanıcının şikâyetidir → TEKNIK sayılır.
-> Bu yüzden bu ifadeler TECHNICAL_KEYWORDS içindedir ve SYSTEM/ODEME kümelerine
-> KONULMAZ; classifier'daki öncelik sırası da bunu garanti eder.
+> DİKKAT: "para iadesi istiyorum", "param gitti" gibi yorumlar ödeme altyapısı hatası DEĞİLDİR!
+> Bunlar genellikle bozuk aracı kiralayıp parasını kaptıran sinirli müşterilerin yorumlarıdır.
+> Bu yüzden bu ifadeler ODEME kümesinde değil, TECHNICAL (TEKNİK) kümesindedir.
+> Classifier'daki öncelik sırası da bunu handle eder.
 """
 
 import unicodedata

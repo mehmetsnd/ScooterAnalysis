@@ -1,11 +1,12 @@
-"""Domain enum'ları — değerler DB şemasındaki (db/01_reset_ve_kurulum.sql +
-db/02_false_fault.sql) enum'larla birebir."""
+"""Projedeki tüm sabitler ve Enum'lar. 
+Not: Buradaki değerler, DB şemasındaki (01_reset_ve_kurulum.sql vb.) tiplerle birebir aynıdır.
+Veritabanına yazarken veya okurken string eşleşmesi için burası referans alınır.
+"""
 
 from enum import Enum
 
 
 class VehicleStatus(str, Enum):
-    """Araç durumu (DB: vehicle_status)."""
 
     AVAILABLE = "AVAILABLE"
     ON_TRIP = "ON_TRIP"
@@ -14,7 +15,6 @@ class VehicleStatus(str, Enum):
 
 
 class RuleType(str, Enum):
-    """Regülasyon kural tipi (DB: rule_type)."""
 
     NO_RIDE = "NO_RIDE"
     SLOW_ZONE = "SLOW_ZONE"
@@ -26,7 +26,6 @@ class RuleType(str, Enum):
 
 
 class EnforcementAction(str, Enum):
-    """Regülasyonun araca uyguladığı yaptırım (DB: enforcement_action)."""
 
     MOTOR_CUTOFF = "MOTOR_CUTOFF"
     SPEED_THROTTLE = "SPEED_THROTTLE"
@@ -36,14 +35,13 @@ class EnforcementAction(str, Enum):
 
 
 class RawRentalStatus(str, Enum):
-    """CSV'den gelen ham kiralama statüsü (magic string'leri engellemek için)."""
+    """CSV'den gelen ham kiralama statüsü. Magic string'leri (3,4) engellemek için."""
 
     SUCCESS = "3"
     FAILED_HARD = "4"
 
 
 class RideOutcome(str, Enum):
-    """Sürüş sonucu (DB: ride_outcome)."""
 
     BASARILI = "BASARILI"
     BASARISIZ_HARD = "BASARISIZ_HARD"
@@ -52,7 +50,6 @@ class RideOutcome(str, Enum):
 
 
 class FailureCategory(str, Enum):
-    """Başarısızlık üst kategorisi (DB: failure_category)."""
 
     TEKNIK = "TEKNIK"
     REGULASYON = "REGULASYON"
@@ -62,7 +59,6 @@ class FailureCategory(str, Enum):
 
 
 class PaymentStatus(str, Enum):
-    """Ödeme durumu (DB: payment_status)."""
 
     OK = "OK"
     DECLINED = "DECLINED"
@@ -71,7 +67,6 @@ class PaymentStatus(str, Enum):
 
 
 class FailureReason(str, Enum):
-    """Başarısızlık alt nedeni (DB: failure_reason)."""
 
     UNLOCK_ACK_TIMEOUT = "UNLOCK_ACK_TIMEOUT"
     GPS_NO_FIX = "GPS_NO_FIX"
