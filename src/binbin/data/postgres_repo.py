@@ -9,11 +9,11 @@ fonksiyonlara delege eder:
   * bağlantı/plumbing    → `engine.py`
   * tablo tanımları      → `schema.py`
 
-Böylece "hangi dosyada hangi fonksiyon" nettir ve tek dosya şişmez. Public API
-(metot adları/imzaları) değişmemiştir → çağıranlar (core/analysis, cli) etkilenmez.
+Böylece "hangi dosyada hangi fonksiyon" nettir ve tek dosya şişmez. Canlı analiz
+yolu `analysis_timeline` (stream) + `ops_cost_rows`; yazma yolu classify_all/assess_all.
 """
 
-from typing import Optional
+from typing import Iterable, Optional
 
 from sqlalchemy import Engine
 
@@ -33,37 +33,10 @@ class PostgresRideRepository:
     def resolve_scope(self, scope: Scope) -> AnalysisScope:
         return queries.resolve_scope(self.engine, scope)
 
-    # -------------------------------------------------------------- analysis
-    def failure_category_counts(self, scope: Optional[AnalysisScope]) -> list[dict]:
-        return queries.failure_category_counts(self.engine, scope)
+    def analysis_timeline(self, scope: Optional[AnalysisScope]) -> Iterable[dict]:
+        return queries.analysis_timeline(self.engine, scope)
 
-    def failure_criteria_counts(
-        self,
-        scope: Optional[AnalysisScope],
-        dur_thr: float = 120,
-        dist_thr: float = 60,
-    ) -> dict:
-        return queries.failure_criteria_counts(self.engine, scope, dur_thr, dist_thr)
-
-    def vehicle_failure_counts(
-        self, scope: Optional[AnalysisScope], min_failures: int
-    ) -> list[dict]:
-        return queries.vehicle_failure_counts(self.engine, scope, min_failures)
-
-    def control_group_stats(self, scope: Optional[AnalysisScope]) -> list[dict]:
-        return queries.control_group_stats(self.engine, scope)
-
-    def false_fault_counts(self, scope: Optional[AnalysisScope]) -> list[dict]:
-        return queries.false_fault_counts(self.engine, scope)
-
-    def subregion_stats(
-        self, scope: Optional[AnalysisScope], min_rides: int
-    ) -> list[dict]:
-        return queries.subregion_stats(self.engine, scope, min_rides)
-
-    def hour_region_counts(self, scope: Optional[AnalysisScope]) -> list[dict]:
-        return queries.hour_region_counts(self.engine, scope)
-
+    # ------------------------------------------------------- analysis (okuma)
     def ops_cost_rows(self, scope: Optional[AnalysisScope]) -> list[dict]:
         return queries.ops_cost_rows(self.engine, scope)
 

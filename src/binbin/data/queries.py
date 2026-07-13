@@ -1,19 +1,19 @@
 """Okuma tarafı (read-side) analitik sorgular — serbest fonksiyonlar.
 
-Her fonksiyon bir `Engine` + `scope` alır ve `list[dict]`/`dict` döner. Ağır
-aggregation SQL'e (FILTER, window) yıkılır; Python sadece şekillendirir. Scope
-enjeksiyonu `engine.run_scoped` üzerinden `{scope}` yer tutucusuyla yapılır.
+Her fonksiyon bir `Engine` + `scope` alır ve `list[dict]`/`dict`/generator döner.
+Scope enjeksiyonu `engine._scope_clause` ile üretilen WHERE parçası bind-param'larla
+yapılır (ham değer SQL'e gömülmez).
 
 Not: Bu modül `PostgresRideRepository` tarafından delege edilerek çağrılır; ayrıca
 doğrudan da kullanılabilir (repo nesnesi olmadan engine ile).
 """
 
-from typing import Optional
+from typing import Iterable, Optional
 
 from sqlalchemy import Engine, text
 
 from binbin.config import Scope
-from binbin.data.engine import _as_dicts, run_scoped
+from binbin.data.engine import _as_dicts, _scope_clause
 from binbin.data.repository import AnalysisScope
 
 
@@ -42,138 +42,66 @@ def resolve_scope(engine: Engine, scope: Scope) -> AnalysisScope:
     return AnalysisScope(country_ids, city_ids)
 
 
-def failure_category_counts(engine: Engine, scope: Optional[AnalysisScope]) -> list[dict]:
-    sql = """
-        SELECT r.failure_category::text AS category, count(*) AS count
-        FROM ride r JOIN city ci ON ci.city_id = r.city_id
-        WHERE r.outcome = 'BASARISIZ_HARD' AND ci.is_test = false {scope}
-        GROUP BY r.failure_category
+def analysis_timeline(
+    engine: Engine, scope: Optional[AnalysisScope]
+) -> Iterable[dict]:
+    """İki senaryolu analiz için araç/zaman sıralı, stream edilen timeline.
+
+    LEAD alanları seçili kapsamın içindeki aynı aracın sonraki sürüşünü gösterir.
+    Sonuç generator olduğu için yüz binlerce satır bellekte biriktirilmez.
     """
-    return run_scoped(engine, sql, scope)
+    clause, params = _scope_clause(scope)
+    sql = text(
+        f"""
+        WITH scoped AS (
+            SELECT
+                r.ride_id, r.source_ref, r.user_ref, r.start_time, r.end_time,
+                r.duration_sec, r.distance_m, r.outcome::text AS outcome,
+                r.vehicle_id, r.city_id, v.external_code,
+                ci.name AS city,
+                sr.source_sub_region_id AS sub_region_code,
+                sr.name AS sub_region_name,
+                EXTRACT(HOUR FROM (r.start_time AT TIME ZONE co.timezone))::int AS local_hour,
+                r.triggered_regulation_id, r.end_reason_id, r.end_message,
+                r.unlock_ack, r.start_battery_pct, r.connection_lost,
+                r.motor_error_code, r.bms_error_code, r.user_cancelled,
+                r.payment_status::text AS payment_status,
+                r.data_quality_flags,
+                f.rating, f.comment_text
+            FROM ride r
+            JOIN city ci ON ci.city_id = r.city_id
+            JOIN country co ON co.country_id = ci.country_id
+            JOIN vehicle v ON v.vehicle_id = r.vehicle_id
+            LEFT JOIN sub_region sr ON sr.sub_region_id = r.sub_region_id
+            LEFT JOIN feedback f
+                   ON f.ride_id = r.ride_id AND f.ride_start_time = r.start_time
+            WHERE ci.is_test = false
+              AND r.outcome IN ('BASARILI', 'BASARISIZ_HARD')
+              {clause}
+        ), timeline AS (
+            SELECT
+                *,
+                LEAD(ride_id) OVER w AS next_ride_id,
+                LEAD(start_time) OVER w AS next_start_time,
+                LEAD(duration_sec) OVER w AS next_duration_sec,
+                LEAD(distance_m) OVER w AS next_distance_m,
+                LEAD(outcome) OVER w AS next_outcome
+            FROM scoped
+            WINDOW w AS (PARTITION BY vehicle_id ORDER BY start_time, ride_id)
+        )
+        SELECT *
+        FROM timeline
+        ORDER BY vehicle_id, start_time, ride_id
+        """
+    )
 
+    def _iter_rows():
+        with engine.connect() as conn:
+            result = conn.execution_options(stream_results=True).execute(sql, params)
+            for row in result.mappings():
+                yield dict(row)
 
-def failure_criteria_counts(
-    engine: Engine,
-    scope: Optional[AnalysisScope],
-    dur_thr: float = 120,
-    dist_thr: float = 60,
-) -> dict:
-    """Başarısızlık eşiği (süre < dur_thr VE mesafe < dist_thr) sayaçları.
-
-    Eşikler PARAMETRİKTİR (bind-param): default 120sn/60m gerçek kuraldır, ama
-    what-if senaryosu için farklı değerlerle çağrılabilir. `zero_distance_long_duration`
-    kuyruğu süre eşiğini (dur_thr) 'açıldı hiç gitmedi' sınırı olarak kullanır.
-    """
-    sql = """
-        SELECT
-          count(*) FILTER (WHERE r.outcome = 'BASARISIZ_HARD') AS failed_total,
-          count(*) FILTER (WHERE r.outcome = 'BASARILI')       AS success_total,
-          count(*) FILTER (WHERE r.outcome = 'BASARISIZ_HARD'
-                AND r.duration_sec < :dur_thr AND r.distance_m < :dist_thr) AS criteria_and_failed,
-          count(*) FILTER (WHERE r.outcome = 'BASARILI'
-                AND r.duration_sec < :dur_thr AND r.distance_m < :dist_thr) AS criteria_and_success,
-          count(*) FILTER (WHERE r.distance_m IS NOT NULL
-                AND r.distance_m < 1 AND r.duration_sec > :dur_thr)  AS zero_distance_long_duration
-        FROM ride r JOIN city ci ON ci.city_id = r.city_id
-        WHERE ci.is_test = false {scope}
-    """
-    return run_scoped(engine, sql, scope, {"dur_thr": dur_thr, "dist_thr": dist_thr})[0]
-
-
-def vehicle_failure_counts(
-    engine: Engine, scope: Optional[AnalysisScope], min_failures: int
-) -> list[dict]:
-    sql = """
-        SELECT r.vehicle_id, v.external_code, count(*) AS failures
-        FROM ride r
-        JOIN city ci ON ci.city_id = r.city_id
-        JOIN vehicle v ON v.vehicle_id = r.vehicle_id
-        WHERE r.outcome = 'BASARISIZ_HARD' AND ci.is_test = false {scope}
-        GROUP BY r.vehicle_id, v.external_code
-        HAVING count(*) >= :min_failures
-        ORDER BY failures DESC
-        LIMIT 100
-    """
-    return run_scoped(engine, sql, scope, {"min_failures": min_failures})
-
-
-def control_group_stats(engine: Engine, scope: Optional[AnalysisScope]) -> list[dict]:
-    sql = """
-        SELECT
-          count(*) FILTER (WHERE a.report_evidence IN ('TEXT_MESSAGE','TEXT_COMMENT'))
-              AS text_total,
-          count(*) FILTER (WHERE a.report_evidence IN ('TEXT_MESSAGE','TEXT_COMMENT')
-              AND a.healthy_proof) AS text_healthy,
-          count(*) FILTER (WHERE a.fault_reported)                       AS reported_total,
-          count(*) FILTER (WHERE a.fault_reported AND a.healthy_proof)   AS reported_healthy,
-          count(*) FILTER (WHERE NOT a.fault_reported)                   AS control_total,
-          count(*) FILTER (WHERE NOT a.fault_reported AND a.healthy_proof) AS control_healthy
-        FROM false_fault_assessment a
-        JOIN ride r ON r.ride_id = a.ride_id AND r.start_time = a.ride_start_time
-        JOIN city ci ON ci.city_id = r.city_id
-        WHERE ci.is_test = false AND a.verdict <> 'DEGERLENDIRILEMEDI' {scope}
-    """
-    c = run_scoped(engine, sql, scope)[0]
-    return [
-        {"group": "ariza_metinli", "total": c["text_total"], "healthy": c["text_healthy"]},
-        {"group": "herhangi_bildirimli", "total": c["reported_total"], "healthy": c["reported_healthy"]},
-        {"group": "bildirimsiz", "total": c["control_total"], "healthy": c["control_healthy"]},
-    ]
-
-
-def false_fault_counts(engine: Engine, scope: Optional[AnalysisScope]) -> list[dict]:
-    sql = """
-        SELECT a.verdict::text AS verdict, a.hypothesis::text AS hypothesis,
-               count(*) AS events,
-               count(DISTINCT r.vehicle_id) AS vehicles,
-               COALESCE(sum(a.wasted_missions), 0) AS wasted
-        FROM false_fault_assessment a
-        JOIN ride r ON r.ride_id = a.ride_id AND r.start_time = a.ride_start_time
-        JOIN city ci ON ci.city_id = r.city_id
-        WHERE ci.is_test = false {scope}
-        GROUP BY a.verdict, a.hypothesis
-        ORDER BY events DESC
-    """
-    return run_scoped(engine, sql, scope)
-
-
-def subregion_stats(
-    engine: Engine, scope: Optional[AnalysisScope], min_rides: int
-) -> list[dict]:
-    sql = """
-        SELECT ci.name AS city,
-               sr.source_sub_region_id AS sub_region_code,
-               sr.name AS sub_region_name,
-               count(*) AS total_rides,
-               count(*) FILTER (WHERE r.outcome = 'BASARISIZ_HARD') AS failed,
-               count(*) FILTER (WHERE a.verdict = 'SAHTE_ALARM_SUPHESI') AS false_alarm
-        FROM ride r
-        JOIN city ci ON ci.city_id = r.city_id
-        JOIN sub_region sr ON sr.sub_region_id = r.sub_region_id
-        LEFT JOIN false_fault_assessment a
-               ON a.ride_id = r.ride_id AND a.ride_start_time = r.start_time
-        WHERE ci.is_test = false {scope}
-        GROUP BY ci.name, sr.source_sub_region_id, sr.name
-        HAVING count(*) >= :min_rides
-        ORDER BY failed DESC
-    """
-    return run_scoped(engine, sql, scope, {"min_rides": min_rides})
-
-
-def hour_region_counts(engine: Engine, scope: Optional[AnalysisScope]) -> list[dict]:
-    sql = """
-        SELECT ci.name AS city,
-               EXTRACT(HOUR FROM (r.start_time AT TIME ZONE co.timezone))::int AS hour,
-               count(*) AS total,
-               count(*) FILTER (WHERE r.outcome = 'BASARISIZ_HARD') AS failed
-        FROM ride r
-        JOIN city ci ON ci.city_id = r.city_id
-        JOIN country co ON co.country_id = ci.country_id
-        WHERE ci.is_test = false {scope}
-        GROUP BY ci.name, hour
-        ORDER BY ci.name, hour
-    """
-    return run_scoped(engine, sql, scope)
+    return _iter_rows()
 
 
 def ops_cost_rows(engine: Engine, scope: Optional[AnalysisScope]) -> list[dict]:

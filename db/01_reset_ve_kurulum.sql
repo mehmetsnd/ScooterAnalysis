@@ -243,8 +243,8 @@ COMMENT ON COLUMN ride.duration_sec IS
     'tutarsız yuvarlanır (%74,6 ceil / %25,3 floor) — KULLANILMAZ. Başarısız '
     'sürüşlerin medyanı 40,6 saniyedir; dakika çözünürlüğü yetersizdir.';
 COMMENT ON COLUMN ride.distance_m IS
-    'Kanonik: distance_meters (= mongo_distance_meters, %100 özdeş). CSV''deki '
-    'distance kolonu satırların %7,2''sinde sapar — KULLANILMAZ.';
+    'Kanonik kaynak CSV mongo_distance_meters alanıdır. distance_meters ve distance '
+    'alanları analiz kararlarında kullanılmaz; mongo alanı boşsa değer NULL kalır.';
 COMMENT ON COLUMN ride.data_quality_flags IS
     'DISTANCE_IMPLAUSIBLE (>50km), DISTANCE_NULL, DURATION_IMPLAUSIBLE (>6sa), '
     'TEST_REGION. Satır SİLİNMEZ, işaretlenir; analizde filtrelenir.';

@@ -2,10 +2,78 @@
 # Kullanım: proje kökünden  ->  .\run.ps1
 # .venv'i elle aktive etmene gerek yok; script venv python'unu kendi bulur.
 
+param(
+    [Nullable[double]]$WiDuration,
+    [Nullable[double]]$WiDistance
+)
+
 $ErrorActionPreference = "Stop"
 
 # Proje kökü = bu script'in bulunduğu klasör
 Set-Location -Path $PSScriptRoot
+
+function Resolve-CustomThreshold {
+    param(
+        [Nullable[double]]$ProvidedValue,
+        [string]$Label,
+        [string]$Unit,
+        [double]$DefaultValue,
+        [double]$Minimum,
+        [double]$Maximum
+    )
+
+    $culture = [Globalization.CultureInfo]::InvariantCulture
+
+    if ($null -ne $ProvidedValue) {
+        $value = [double]$ProvidedValue
+        if ($value -lt $Minimum -or $value -gt $Maximum) {
+            throw "$Label $Minimum-$Maximum $Unit araliginda olmali."
+        }
+        return $value.ToString("0.###", $culture)
+    }
+
+    while ($true) {
+        $rawValue = Read-Host "$Label ($Unit) [$Minimum-$Maximum, varsayilan: $DefaultValue]"
+        if ([string]::IsNullOrWhiteSpace($rawValue)) {
+            return $DefaultValue.ToString("0.###", $culture)
+        }
+
+        $normalized = $rawValue.Trim().Replace(",", ".")
+        $value = 0.0
+        $parsed = [double]::TryParse(
+            $normalized,
+            [Globalization.NumberStyles]::Float,
+            $culture,
+            [ref]$value
+        )
+        if (-not $parsed) {
+            Write-Host "Gecersiz deger. Ornek: 100 veya 100,5" -ForegroundColor Yellow
+            continue
+        }
+        if ($value -lt $Minimum -or $value -gt $Maximum) {
+            Write-Host "$Label $Minimum-$Maximum $Unit araliginda olmali." -ForegroundColor Yellow
+            continue
+        }
+        return $value.ToString("0.###", $culture)
+    }
+}
+
+Write-Host "`n========== OZEL KURAL AYARLARI ==========" -ForegroundColor Cyan
+$wiDurationText = Resolve-CustomThreshold `
+    -ProvidedValue $WiDuration `
+    -Label "Sure esigi" `
+    -Unit "saniye" `
+    -DefaultValue 100 `
+    -Minimum 60 `
+    -Maximum 200
+$wiDistanceText = Resolve-CustomThreshold `
+    -ProvidedValue $WiDistance `
+    -Label "Mesafe esigi" `
+    -Unit "metre" `
+    -DefaultValue 45 `
+    -Minimum 20 `
+    -Maximum 150
+Write-Host "Ozel Kural: sure < $wiDurationText saniye VE mesafe < $wiDistanceText metre" -ForegroundColor Green
 
 # venv python'u (yoksa PATH'teki python'a düş)
 if (Test-Path ".\.venv\Scripts\python.exe") {
@@ -32,9 +100,8 @@ Write-Host "`n========== ADIM 3/4: ASSESS (sahte ariza degerlendirmesi) ========
 if ($LASTEXITCODE -ne 0) { Write-Host "ASSESS BASARISIZ!" -ForegroundColor Red; exit 1 }
 
 Write-Host "`n========== ADIM 4/4: ANALYZE (analiz + grafikler) ==========" -ForegroundColor Cyan
-# What-if esik karsilastirmasi: gercek (120sn/60m) vs senin kuralin (asagidaki degerler).
-# Degerleri degistirebilir veya bu iki bayragi kaldirirsan tek-senaryo cikti alirsin.
-& $py -m binbin.cli analyze --false-fault --detay --derin --charts out\ --wi-duration 100 --wi-distance 45
+# Esik karsilastirmasi: Mevcut Kural (120sn/60m) ve kullanicinin girdigi Ozel Kural.
+& $py -m binbin.cli analyze --false-fault --detay --derin --charts out\ --wi-duration $wiDurationText --wi-distance $wiDistanceText
 if ($LASTEXITCODE -ne 0) { Write-Host "ANALYZE BASARISIZ!" -ForegroundColor Red; exit 1 }
 
 Write-Host "`n========== TAMAMLANDI ==========" -ForegroundColor Green

@@ -39,13 +39,18 @@ $env:PYTHONPATH = "src"
 python -m pytest tests/ -q
 
 # Uçtan uca akış (Postgres gerekir):
-python -m binbin.cli ingest                       # CSV → Postgres (~406.814 satır)
-python -m binbin.cli classify                     # başarısızları sınıflandır
-python -m binbin.cli assess                       # sahte arıza değerlendirmesi
-python -m binbin.cli analyze --false-fault --detay --derin --charts out\
+.\run.ps1  # Özel Kural: süre 60-200 saniye, mesafe 20-150 metre
 
-# What-if eşik karşılaştırması (gerçek 120sn/60m vs kendi kuralın):
-python -m binbin.cli analyze --wi-duration 100 --wi-distance 45 --charts out\
+# Boş girişte varsayılan 100 saniye / 45 metre kullanılır.
+# Otomasyon veya tekrar üretilebilir bir çalışma için değerler doğrudan verilebilir:
+.\run.ps1 -WiDuration 105 -WiDistance 50
+
+# Yalnız analizi doğrudan çalıştırmak için:
+# Özel eşik karşılaştırması — iki okunur senaryo birlikte raporlanır:
+#   Mevcut Kural = BASARISIZ_HARD veya 120sn/60m
+#   Özel Kural   = kaynak etiketi yok; yalnız 100sn/45m
+python -m binbin.cli analyze --wi-duration 100 --wi-distance 45 \
+  --false-fault --detay --derin --charts out\
 
 # API (http://127.0.0.1:8000/health) — analiz endpoint'leri sonraki PART
 python -m uvicorn binbin.api.app:app --reload
@@ -53,6 +58,38 @@ python -m uvicorn binbin.api.app:app --reload
 
 Ingest sonrası DB doğrulama: `country`=3, `city`≥2 (is_test hariç),
 `SELECT count(*) FROM ride_default` = 0, `data_load.status='SUCCESS'`.
+
+## Mesafe kaynağı ve veri-only reset
+
+`ride.distance_m` alanının tek kanonik kaynağı CSV'deki
+`mongo_distance_meters` kolonudur. `distance_meters` ve `distance` analiz
+kararlarında kullanılmaz; mongo alanı boşsa değer `NULL` kalır.
+
+Mongo mesafesiyle yeniden ingest öncesinde `db/01_reset_ve_kurulum.sql`
+çalıştırılmamalıdır; o betik tüm `public` şemasını silip yeniden kurar. Tablo,
+enum, indeks, partition ve referans/config kayıtlarını koruyarak yalnız operasyonel
+veriyi temizlemek için sırasıyla:
+
+```text
+db/03_pre_data_reset_check.sql      # salt okunur mevcut durum/audit
+db/04_reset_operational_data.sql    # ride, feedback, assessment, load, staging
+db/05_post_data_reset_check.sql     # tablolar boş, şema/partition/config sağlam mı
+```
+
+Reset sonrasında tüm CSV'leri yeniden `ingest` et; ardından `classify` ve
+`assess --refresh` çalıştır.
+
+## Başarısızlık senaryoları
+
+Analiz, özel eşikler verildiğinde aynı sürüş kümesini iki kuralla karşılaştırır:
+
+- **Mevcut Kural:** kaynak `BASARISIZ_HARD` veya 120sn/60m eşiğine uyan kaynak başarılı.
+- **Özel Kural:** kaynak outcome yok sayılır; yalnız CLI'daki özel eşik uygulanır.
+
+CLI; her senaryonun başarısızlık oranını ve `Mevcut Kural → Özel Kural` geçişi için
+başarısız→başarılı, başarılı→başarısız, net adet ve yüzde-puan farklarını gösterir.
+Özel Kural'da süre veya mongo mesafesi eksik sürüşler başarılı sayılmaz;
+`değerlendirilemedi` olarak ayrı raporlanır.
 
 ## Yapı
 
@@ -76,7 +113,10 @@ src/binbin/
 
 db/              # PostgreSQL şeması (elle çalıştırılır)
 ├── 01_reset_ve_kurulum.sql
-└── 02_false_fault.sql
+├── 02_false_fault.sql
+├── 03_pre_data_reset_check.sql
+├── 04_reset_operational_data.sql
+└── 05_post_data_reset_check.sql
 ```
 
 Veri kaynağı soyutlaması `repository.py` Protocol'ü ile tanımlanır; tek somut

@@ -7,7 +7,12 @@ Kullanım örnekleri (PYTHONPATH=src klasöründe):
     python -m binbin.cli ingest   [--data-dir data_raw] [--country ...] [--city ...] [--all]
     python -m binbin.cli classify [--batch-size 10000]  [--country ...] [--city ...] [--all]
     python -m binbin.cli assess   [--country ...] [--city ...] [--all]
-    python -m binbin.cli analyze  [--detay] [--derin] [--false-fault] [--charts DIR] ...
+    python -m binbin.cli analyze  [--detay] [--derin] [--false-fault] [--charts DIR]
+                                  [--wi-duration SN --wi-distance M]
+
+`analyze` iki senaryolu çalışır: Mevcut Kural her zaman; --wi-duration/--wi-distance
+BİRLİKTE verilirse ek olarak Özel Kural senaryosu ve aralarındaki geçiş karşılaştırması
+hesaplanır. Motor `core/scenario_analysis` (tek geçiş, streaming timeline).
 
 Scope (Kapsam) Mantığı:
     Hiçbir bayrak verilmezse   -> config.DEFAULT_SCOPE (Türkiye + İstanbul Avrupa/Anadolu)
@@ -17,11 +22,17 @@ Scope (Kapsam) Mantığı:
 """
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
 from binbin.config import DEFAULT_SCOPE, UNRESTRICTED_SCOPE, Scope
-from binbin.core import analysis
+from binbin.reporting.format import (
+    fmt_threshold as _fmt_thr,
+    signed_int as _signed_int,
+    tr_int as _tr_int,
+    tr_pct as _tr_pct,
+)
 
 
 def _force_utf8_stdout() -> None:
@@ -83,11 +94,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_an.add_argument("--charts", type=Path, metavar="DIR", help="PNG'leri bu klasöre üret")
     p_an.add_argument(
         "--wi-duration", type=float, metavar="SN",
-        help="What-if süre eşiği (sn). --wi-distance ile BİRLİKTE verilir.",
+        help="Özel senaryo süre eşiği (sn). --wi-distance ile BİRLİKTE verilir.",
     )
     p_an.add_argument(
         "--wi-distance", type=float, metavar="M",
-        help="What-if mesafe eşiği (m). --wi-duration ile BİRLİKTE verilir.",
+        help="Özel senaryo mesafe eşiği (m). --wi-duration ile BİRLİKTE verilir.",
     )
     _add_scope_args(p_an)
     return parser
@@ -186,161 +197,332 @@ def cmd_loads(args: argparse.Namespace) -> None:
         )
 
 
-def _whatif_from_args(args: argparse.Namespace) -> tuple[float, float] | None:
-    """--wi-duration/--wi-distance çiftini doğrular; ikisi de yoksa None döner.
+def _custom_rule_from_args(args: argparse.Namespace) -> tuple[float, float] | None:
+    """Özel Kural eşiklerini (--wi-duration/--wi-distance) doğrular; ikisi de yoksa None.
 
-    Yarım kural (yalnız biri verilmiş) anlamsızdır → net hata.
+    Yarım kural (yalnız biri verilmiş) anlamsızdır → net hata. (Bayrak adları geriye
+    dönük uyumluluk için --wi-* kalır; kavram 'Özel Kural senaryosu'dur.)
     """
     dur, dist = args.wi_duration, args.wi_distance
     if (dur is None) != (dist is None):
         raise SystemExit(
             "Hata: --wi-duration ve --wi-distance BİRLİKTE verilmeli "
-            "(what-if kuralı hem süre hem mesafe eşiği ister)."
+            "(Özel Kural senaryosu hem süre hem mesafe eşiği ister)."
         )
+    if dur is not None and (
+        not math.isfinite(dur) or not math.isfinite(dist) or dur <= 0 or dist <= 0
+    ):
+        raise SystemExit("Hata: özel süre ve mesafe eşikleri sonlu ve sıfırdan büyük olmalı.")
     return (dur, dist) if dur is not None else None
 
 
 def cmd_analyze(args: argparse.Namespace) -> None:
     from binbin.data.postgres_repo import PostgresRideRepository
+    from binbin.core import scenario_analysis
 
-    whatif_thr = _whatif_from_args(args)
+    custom_thr = _custom_rule_from_args(args)
     repo = PostgresRideRepository()
     ascope = repo.resolve_scope(_scope_from_args(args))
 
-    cause = analysis.cause_distribution(repo, ascope)
-    control = analysis.control_group_comparison(repo, ascope)
-    _print_cause(cause)
-    # Eşik bloğu: what-if verildiyse gerçek vs what-if kıyası, yoksa tek senaryo.
-    whatif = None
-    if whatif_thr is not None:
-        whatif = analysis.failure_criteria_whatif(repo, ascope, whatif_thr)
-        _print_criteria_whatif(whatif)
-    else:
-        _print_criteria(analysis.failure_criteria_check(repo, ascope))
-    _print_control(control)
-
-    chart_data: dict = {}
+    # Bilinçli takas: analyze her çağrıda tüm timeline'ı (BASARILI+BASARISIZ_HARD)
+    # STREAM eder ve agregasyonu Python'da yapar. Neden: iki senaryolu yeniden
+    # sınıflandırma + classify/assess mantığını SQL'de tekrarlamamak için. Bellek
+    # O(satır) değil O(farklı varlık); mevcut aylık ölçekte uygundur. Çok büyük
+    # ölçekte (10M+ satır) sık başlıklar için SQL-tarafı agregasyon yeniden değerlendirilmeli.
+    report = scenario_analysis.analyze_scenarios(
+        repo.analysis_timeline(ascope),
+        custom=custom_thr,
+        cost_rows=repo.ops_cost_rows(ascope),
+    )
+    _print_scenario_definitions(report)
+    _print_scenario_overview(report)
+    _print_scenario_comparisons(report)
+    _print_scenario_causes(report)
+    _print_scenario_criteria(report)
+    _print_scenario_control(report)
     if args.false_fault:
-        ff = analysis.false_fault_summary(repo, ascope)
-        _print_false_fault(ff)
+        _print_scenario_false_fault(report)
     if args.detay:
-        vh = analysis.vehicle_hotspots(repo, ascope)
-        sr = analysis.subregion_hotspots(repo, ascope)
-        _print_vehicle_hotspots(vh)
-        _print_subregion(sr)
-        chart_data["vehicle"] = vh
-        chart_data["subregion"] = sr
+        _print_scenario_vehicles(report)
+        _print_scenario_subregions(report)
     if args.derin:
-        hr = analysis.hour_region_breakdown(repo, ascope)
-        _print_hourly(hr)
-        chart_data["hourly"] = hr
+        _print_scenario_hourly(report)
 
     if args.charts:
         from binbin.reporting import charts
 
         paths = [
-            charts.chart_cause_distribution(cause, args.charts),
-            charts.chart_control_group(control, args.charts),
+            charts.chart_scenario_overview(report, args.charts),
+            charts.chart_scenario_causes(report, args.charts),
+            charts.chart_scenario_control(report, args.charts),
         ]
-        if whatif is not None:
-            paths.append(charts.chart_criteria_whatif(whatif, args.charts))
-        if "vehicle" in chart_data:
-            paths.append(charts.chart_vehicle_hotspots(chart_data["vehicle"], args.charts))
-        if "subregion" in chart_data:
-            paths.append(charts.chart_subregion_false_fault(chart_data["subregion"], args.charts))
-        if "hourly" in chart_data:
-            paths.append(charts.chart_hourly_failure_rate(chart_data["hourly"], args.charts))
+        if report["comparisons"]:
+            paths.append(charts.chart_scenario_transitions(report, args.charts))
+        if args.false_fault:
+            paths.append(charts.chart_scenario_false_fault(report, args.charts))
+        if args.detay:
+            paths.append(charts.chart_scenario_vehicles(report, args.charts))
+            paths.append(charts.chart_scenario_subregions(report, args.charts))
+        if args.derin:
+            paths.append(charts.chart_scenario_hourly(report, args.charts))
         print("\nGrafikler:")
         for p in paths:
             print(f"  {p}")
 
 
-# ------------------------------------------------------------------ yazdırıcılar
-def _print_cause(d: dict) -> None:
-    print(f"\n=== Neden Dağılımı (toplam başarısız: {d['total_failed']:,}) ===")
-    for c in d["categories"]:
-        print(f"  {c['category']:<12} {c['count']:>8,}  %{c['pct']}")
-    s = d["signalless"]
-    print(f"  {'SİNYALSİZ':<12} {s['count']:>8,}  %{s['pct']}  (kategori uydurulmaz)")
+# ---------------------------------------------------- iki senaryolu okunur çıktı
+_CAUSE_LABELS = {
+    "TEKNIK": "Teknik",
+    "REGULASYON": "Regülasyon",
+    "KULLANICI": "Kullanıcı",
+    "ODEME": "Ödeme",
+    "SISTEM": "Sistem",
+    "SINYALSIZ": "Sinyalsiz",
+}
+_GROUP_LABELS = {
+    "ariza_metinli": "Arıza metinli bildirim",
+    "herhangi_bildirimli": "Herhangi bildirim",
+    "bildirimsiz": "Bildirimsiz (kontrol)",
+}
 
 
-def _fmt_thr(v) -> str:
-    """Eşik gösterimi: tam sayıysa ondalıksız (120.0 → '120', 45.5 → '45.5')."""
-    return str(int(v)) if float(v).is_integer() else str(v)
+def _scenario_list(report: dict) -> list[dict]:
+    return [report["scenarios"][key] for key in report["scenario_order"]]
 
 
-def _print_criteria(d: dict) -> None:
-    print(f"\n=== Başarısızlık Kriteri ({d['criterion']}) ===")
-    fm = d["failed_meeting_criterion"]
-    hf = d["hidden_failed"]
-    dur = _fmt_thr(d["duration_threshold"])
-    print(f"  kritere uyan başarısız : {fm['count']:,}  (başarısızın %{fm['pct_of_failed']})")
-    print(f"  gizli başarısız (BAŞARILI ama kritere uyan): {hf['count']:,}  (%{hf['pct_of_success']})")
-    print(f"  açıldı hiç gitmedi (dist≈0, süre>{dur}sn): {d['opened_never_moved']['count']:,}")
+def _rule_text(scenario: dict) -> str:
+    dur = _fmt_thr(scenario["duration_threshold"])
+    dist = _fmt_thr(scenario["distance_threshold"])
+    threshold = f"süre < {dur} sn ve mesafe < {dist} m"
+    if scenario["include_source_failure"]:
+        return f"Kaynak başarısız veya {threshold}"
+    return f"Kaynak etiketi kullanılmaz; yalnız {dur} sn/{dist} m uygulanır"
 
 
-def _print_criteria_whatif(w: dict) -> None:
-    """Gerçek vs what-if doğrulama oranı — yan yana sütunlu tablo + delta."""
-    real, what, delta = w["real"], w["whatif"], w["delta"]
-    r_lbl = f"GERÇEK({_fmt_thr(real['duration_threshold'])}sn/{_fmt_thr(real['distance_threshold'])}m)"
-    w_lbl = f"SENİN({_fmt_thr(what['duration_threshold'])}sn/{_fmt_thr(what['distance_threshold'])}m)"
-    r_fm, w_fm = real["failed_meeting_criterion"], what["failed_meeting_criterion"]
-    r_pct = "%" + str(r_fm["pct_of_failed"])
-    w_pct = "%" + str(w_fm["pct_of_failed"])
-    delta_pct = f"{delta['confirm_pct_points']:+} puan"
-    print("\n=== Başarısızlık Kriteri: Gerçek vs What-if (doğrulama oranı) ===")
-    print(f"  {'':<24}{r_lbl:>20}{w_lbl:>20}{'Δ':>16}")
-    print(
-        f"  {'kritere uyan başarısız':<24}{r_fm['count']:>20,}{w_fm['count']:>20,}"
-        f"{delta['confirm_count_delta']:>+16,}"
-    )
-    print(f"  {'doğrulama oranı':<24}{r_pct:>20}{w_pct:>20}{delta_pct:>16}")
-    print(
-        f"  toplam başarısız: {real['failed_total']:,}  ·  "
-        f"göreli değişim: {delta['rel_pct']:+}%"
-    )
+def _section(title: str) -> None:
+    print(f"\n{title}")
+    print("═" * min(100, max(68, len(title))))
 
 
-def _print_control(d: dict) -> None:
-    print("\n=== Kontrol Grubu Karşılaştırması (healthy_proof oranı) ===")
-    for g in d["groups"]:
-        print(f"  {g['group']:<20} n={g['total']:>7,}  sağlam=%{g['healthy_rate_pct']}")
-    print("  Not: bildirimli araçlar bildirimsizden DAHA AZ toparlanıyorsa, bildirimler gerçek sinyal taşır.")
+def _print_scenario_definitions(report: dict) -> None:
+    _section("SENARYOLAR")
+    for scenario in _scenario_list(report):
+        print(f"{scenario['label']:<24}: {_rule_text(scenario)}")
+    print(f"{'Mesafe kaynağı':<24}: {report['distance_source']}")
 
 
-def _print_false_fault(d: dict) -> None:
-    print(f"\n=== Sahte Arıza Özeti (toplam boşa görev: {d['total_wasted_missions']:,}) ===")
-    for r in d["breakdown"]:
+def _print_scenario_overview(report: dict) -> None:
+    _section("GENEL BAŞARISIZLIK ÖZETİ")
+    print(f"{'Senaryo':<24}{'Başarısız':>13}{'Başarılı':>13}{'Değerlendirme dışı':>20}{'Oran':>10}")
+    print("─" * 80)
+    for scenario in _scenario_list(report):
+        o = scenario["overview"]
         print(
-            f"  {r['verdict']:<22} {r['hypothesis']:<20} "
-            f"olay={r['events']:>6,} araç={r['vehicles']:>6,} boşa_görev={r['wasted_missions']:>6,}"
+            f"{scenario['label']:<24}{_tr_int(o['failed']):>13}{_tr_int(o['success']):>13}"
+            f"{_tr_int(o['unevaluated']):>20}{_tr_pct(o['failure_rate_pct']):>10}"
         )
-    if d["cost"] is None:
-        print("  Maliyet: ops_cost_model boş → yalnız GÖREV SAYISI raporlanır (TL yok).")
-    else:
-        c = d["cost"]
-        print(f"  Maliyet: ~{c['amount']:,} {c['currency']} ({c['wasted_missions']:,} boşa görev)")
+    quality = report["data_quality"]
+    print(
+        f"\nToplam analiz edilen: {_tr_int(quality['total'])} · "
+        f"Kaynak başarısız: {_tr_int(quality['source_failed'])} · "
+        f"Mongo mesafesi eksik: {_tr_int(quality['distance_null'])} · "
+        f"Mantıksız mesafe: {_tr_int(quality['distance_implausible'])}"
+    )
 
 
-def _print_vehicle_hotspots(d: dict) -> None:
-    print(f"\n=== Araç Sıcak Noktaları (min {d['min_failures']} başarısızlık) ===")
-    for v in d["vehicles"]:
-        print(f"  {str(v.get('external_code') or v['vehicle_id']):<10} {v['failures']:>5,}")
-
-
-def _print_subregion(d: dict) -> None:
-    print(f"\n=== Alt Bölge Sıcak Noktaları (min {d['min_rides']:,} sürüş) ===")
-    for s in d["sub_regions"]:
+def _print_scenario_comparisons(report: dict) -> None:
+    if not report["comparisons"]:
+        return
+    _section("SENARYOLAR ARASI GEÇİŞLER")
+    for c in report["comparisons"]:
+        print(f"\n{c['from_label'].upper()} → {c['to_label'].upper()}")
+        print("─" * 68)
         print(
-            f"  {s['city']:<18} #{s['sub_region_code']:<6} "
-            f"başarısızlık=%{s['failure_rate_pct']:<5} sahte_alarm/1000={s['false_alarm_per_1000']}"
+            f"Başarısızdan başarılıya dönen  {_tr_int(c['failed_to_success']):>10}  "
+            f"başlangıç başarısızlarının {_tr_pct(c['failed_to_success_pct'])}’i"
+        )
+        print(
+            f"Başarıdan başarısıza dönen      {_tr_int(c['success_to_failed']):>10}  "
+            f"başlangıç başarılılarının {_tr_pct(c['success_to_failed_pct'])}’i"
+        )
+        print(
+            f"Net başarısız değişimi          {_signed_int(c['failed_count_delta']):>10}  "
+            f"oran farkı {c['failure_rate_pp_delta']:+.1f} puan · "
+            f"göreli {c['relative_failed_pct']:+.1f}%"
+        )
+        if c["failed_to_unevaluated"]:
+            print(f"Başarısızdan değerlendirme dışına {_tr_int(c['failed_to_unevaluated']):>10}")
+        if c["success_to_unevaluated"]:
+            print(f"Başarıdan değerlendirme dışına    {_tr_int(c['success_to_unevaluated']):>10}")
+        if c["unevaluated_to_failed"]:
+            print(f"Değerlendirme dışından başarısıza {_tr_int(c['unevaluated_to_failed']):>10}")
+        if c["unevaluated_to_success"]:
+            print(f"Değerlendirme dışından başarıya   {_tr_int(c['unevaluated_to_success']):>10}")
+
+
+def _print_scenario_causes(report: dict) -> None:
+    _section("NEDEN DAĞILIMI")
+    scenarios = _scenario_list(report)
+    maps = []
+    keys = set()
+    for scenario in scenarios:
+        cause = scenario["cause"]
+        values = {r["category"]: (r["count"], r["pct"]) for r in cause["categories"]}
+        values["SINYALSIZ"] = (cause["signalless"]["count"], cause["signalless"]["pct"])
+        maps.append(values)
+        keys.update(values)
+    ordered = sorted(keys, key=lambda key: max(m.get(key, (0, 0))[0] for m in maps), reverse=True)
+    print(f"{'Kategori':<23}" + "".join(f"{s['label']:>23}" for s in scenarios))
+    print("─" * (23 + 23 * len(scenarios)))
+    for key in ordered:
+        cells = []
+        for values in maps:
+            count, pct = values.get(key, (0, 0.0))
+            cells.append(f"{_tr_int(count)} · {_tr_pct(pct)}")
+        print(f"{_CAUSE_LABELS.get(key, key):<23}" + "".join(f"{cell:>23}" for cell in cells))
+    if len(scenarios) > 1:
+        print("Not: yüzdeler her senaryonun kendi başarısız toplamına göredir.")
+
+
+def _print_scenario_criteria(report: dict) -> None:
+    _section("BAŞARISIZLIK KRİTERİ")
+    scenarios = _scenario_list(report)
+    metrics = (
+        ("source_failed", "Kaynak BASARISIZ_HARD"),
+        ("threshold_failed", "Eşik kuralına uyan"),
+        ("source_failed_meeting_threshold", "Kaynak başarısız + eşik uyumlu"),
+        ("hidden_failed", "Kaynak başarılı fakat eşik uyumlu"),
+        ("combined_failed", "Senaryo toplam başarısız"),
+        ("opened_never_moved", "Uzun süre açık/hareket yok"),
+    )
+    print(f"{'Metrik':<37}" + "".join(f"{s['label']:>22}" for s in scenarios))
+    print("─" * (37 + 22 * len(scenarios)))
+    for key, label in metrics:
+        print(f"{label:<37}" + "".join(f"{_tr_int(s['criteria'][key]):>22}" for s in scenarios))
+    print(
+        "Not: uzun süre açık/hareket yok; mongo mesafesi < 1 m ve süre ilgili eşikten "
+        "uzundur. Ana kısa-sürüş kriteriyle kesişmez ve toplama ayrıca eklenmez."
+    )
+
+
+def _print_scenario_control(report: dict) -> None:
+    _section("KONTROL GRUBU KARŞILAŞTIRMASI")
+    scenarios = _scenario_list(report)
+    maps = [{g["group"]: g for g in s["control"]["groups"]} for s in scenarios]
+    print(f"{'Grup':<25}" + "".join(f"{s['label']:>25}" for s in scenarios))
+    print("─" * (25 + 25 * len(scenarios)))
+    for key, label in _GROUP_LABELS.items():
+        cells = [
+            f"n={_tr_int(m[key]['total'])} · sağlam {_tr_pct(m[key]['healthy_rate_pct'])}"
+            for m in maps
+        ]
+        print(f"{label:<25}" + "".join(f"{cell:>25}" for cell in cells))
+
+
+def _print_scenario_false_fault(report: dict) -> None:
+    _section("SAHTE ARIZA ÖZETİ")
+    scenarios = _scenario_list(report)
+    maps = [{r["key"]: r for r in s["false_fault"]["primary"]} for s in scenarios]
+    print(f"{'Kategori':<18}" + "".join(f"{s['label']:>32}" for s in scenarios))
+    print("─" * (18 + 32 * len(scenarios)))
+    for key, label in (("GECICI_TEKNIK", "Geçici Teknik"), ("REGULASYON", "Regülasyon")):
+        cells = [
+            f"olay {_tr_int(m[key]['events'])} · araç {_tr_int(m[key]['vehicles'])} · "
+            f"görev {_tr_int(m[key]['wasted_missions'])}"
+            for m in maps
+        ]
+        print(f"{label:<18}" + "".join(f"{cell:>32}" for cell in cells))
+    if any(row["cost"] is not None for mapping in maps for row in mapping.values()):
+        print("\nTahmini operasyon maliyeti")
+        for scenario, mapping in zip(scenarios, maps):
+            total = sum((row["cost"] or 0) for row in mapping.values())
+            currency = next((row["currency"] for row in mapping.values() if row["currency"]), "")
+            print(f"  {scenario['label']:<24} {_tr_int(round(total)):>12} {currency}")
+    print("\nDeğerlendirme Detayı")
+    detail_maps = [{r["key"]: r for r in s["false_fault"]["details"]} for s in scenarios]
+    labels = scenarios[0]["false_fault"]["details"]
+    for row in labels:
+        print(
+            f"{row['label']:<30}"
+            + "".join(f"{_tr_int(m[row['key']]['events']):>20}" for m in detail_maps)
         )
 
 
-def _print_hourly(d: dict) -> None:
-    print("\n=== Saatlik Başarısızlık Oranı (yerel saat) ===")
-    for b in d["buckets"]:
-        print(f"  {b['city']:<18} {b['hour']:02d}:00  n={b['total']:>6,}  başarısız=%{b['failure_rate_pct']}")
+_MAX_HOTSPOT_ROWS = 100  # araç sıcak nokta tablosunda gösterilecek azami satır
+
+
+def _print_scenario_vehicles(report: dict) -> None:
+    _section("ARAÇ SICAK NOKTALARI")
+    scenarios = _scenario_list(report)
+    maps = []
+    labels = {}
+    all_keys = set()
+    for scenario in scenarios:
+        values = {}
+        for row in scenario["vehicle"]["vehicles"]:
+            key = row["vehicle_id"]
+            values[key] = row["failures"]
+            labels[key] = str(row.get("external_code") or key)
+            all_keys.add(key)
+        maps.append(values)
+    min_failures = scenarios[0]["vehicle"]["min_failures"]
+    selected = [key for key in all_keys if max(m.get(key, 0) for m in maps) >= min_failures]
+    selected.sort(key=lambda key: max(m.get(key, 0) for m in maps), reverse=True)
+    print(f"{'Araç':<18}" + "".join(f"{s['label']:>20}" for s in scenarios))
+    print("─" * (18 + 20 * len(scenarios)))
+    for key in selected[:_MAX_HOTSPOT_ROWS]:
+        print(f"{labels[key]:<18}" + "".join(f"{_tr_int(m.get(key, 0)):>20}" for m in maps))
+
+
+def _print_scenario_subregions(report: dict) -> None:
+    _section("ALT BÖLGE SICAK NOKTALARI")
+    scenarios = _scenario_list(report)
+    maps = []
+    keys = set()
+    for scenario in scenarios:
+        values = {(r["city"], r["sub_region_code"]): r for r in scenario["subregion"]["sub_regions"]}
+        maps.append(values)
+        keys.update(values)
+    ordered = sorted(keys, key=lambda key: max(m.get(key, {}).get("failed", 0) for m in maps), reverse=True)
+    for key in ordered:
+        totals = {
+            int(values[key]["total_rides"])
+            for values in maps
+            if key in values
+        }
+        if len(totals) != 1:
+            raise ValueError(f"Alt bölge senaryolarının toplam sürüş sayıları uyuşmuyor: {key}")
+        total_rides = next(iter(totals))
+        print(f"\n{key[0]} · Bölge {key[1]} · n={_tr_int(total_rides)}")
+        for scenario, values in zip(scenarios, maps):
+            row = values.get(key, {})
+            print(
+                f"  {scenario['label']:<22} başarısız {_tr_pct(row.get('failure_rate_pct', 0)):>7} · "
+                f"şüpheli/1000 {row.get('false_alarm_per_1000', 0):.2f}"
+            )
+
+
+def _print_scenario_hourly(report: dict) -> None:
+    _section("SAATLİK BAŞARISIZLIK ORANI (YEREL SAAT)")
+    scenarios = _scenario_list(report)
+    maps = [{(r["city"], r["hour"]): r for r in s["hourly"]["buckets"]} for s in scenarios]
+    keys = sorted(set().union(*(m.keys() for m in maps)))
+    print(f"{'Şehir / saat':<24}{'n':>12}" + "".join(f"{s['label']:>20}" for s in scenarios))
+    print("─" * (36 + 20 * len(scenarios)))
+    for key in keys:
+        totals = {
+            int(values[key]["total"])
+            for values in maps
+            if key in values
+        }
+        if len(totals) != 1:
+            raise ValueError(f"Saatlik senaryoların toplam sürüş sayıları uyuşmuyor: {key}")
+        total_rides = next(iter(totals))
+        print(
+            f"{key[0] + ' ' + format(key[1], '02d') + ':00':<24}"
+            f"{_tr_int(total_rides):>12}"
+            + "".join(f"{_tr_pct(m.get(key, {}).get('failure_rate_pct', 0)):>20}" for m in maps)
+        )
 
 
 _HANDLERS = {

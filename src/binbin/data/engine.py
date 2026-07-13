@@ -15,7 +15,7 @@ from functools import lru_cache
 from typing import Optional
 
 from dotenv import load_dotenv
-from sqlalchemy import Engine, create_engine, text
+from sqlalchemy import Engine, create_engine
 
 from binbin.config import (
     DB_MAX_OVERFLOW,
@@ -80,22 +80,3 @@ def _scope_clause(scope: Optional[AnalysisScope]) -> tuple[str, dict]:
         clause += f" AND {_CITY_ALIAS}.city_id = ANY(:sc_city_ids)"
         params["sc_city_ids"] = list(scope.city_ids)
     return clause, params
-
-
-def run_scoped(
-    engine: Engine,
-    sql: str,
-    scope: Optional[AnalysisScope],
-    extra: Optional[dict] = None,
-) -> list[dict]:
-    """`{scope}` yer tutucusunu scope WHERE parçasıyla doldurup sorguyu yürütür.
-
-    `.replace` (`.format` değil): SQL'de literal `{}` geçse bile patlamaz,
-    format-injection yüzeyi sıfır. `clause` kod-üretimli, yalnız bind placeholder içerir.
-    """
-    clause, params = _scope_clause(scope)
-    if extra:
-        params.update(extra)
-    with engine.connect() as conn:
-        result = conn.execute(text(sql.replace("{scope}", clause)), params)
-        return _as_dicts(result)

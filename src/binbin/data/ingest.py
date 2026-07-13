@@ -219,7 +219,9 @@ def _insert_rides(conn, clause: str, params: dict, data_load_id: int) -> None:
                     s.gross_amount, s.currency,
                     (s.start_date_tr::timestamp AT TIME ZONE 'Europe/Istanbul') AS start_ts,
                     (s.end_date_tr::timestamp   AT TIME ZONE 'Europe/Istanbul') AS end_ts,
-                    NULLIF(s.distance_meters, '')::numeric AS dist_raw
+                    -- Mongo telemetri mesafesi kanoniktir. distance_meters/distance
+                    -- alanlarına bilinçli olarak fallback yapılmaz.
+                    NULLIF(s.mongo_distance_meters, '')::numeric AS dist_raw
                 FROM stg_rental_raw s
                 WHERE {_ELIGIBLE_RAW} {clause}
             )
