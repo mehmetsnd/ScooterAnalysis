@@ -53,14 +53,8 @@ def _scope_from_args(args: argparse.Namespace) -> Scope:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """CLI argüman ayrıştırıcısını kurar (subcommand'lar + global --source)."""
+    """CLI argüman ayrıştırıcısını kurar (subcommand'lar + kapsam bayrakları)."""
     parser = argparse.ArgumentParser(prog="binbin", description="Binbin başarısız sürüş analizi")
-    parser.add_argument(
-        "--source",
-        choices=("postgres", "mock"),
-        default="postgres",
-        help="Veri kaynağı (mock → DB'ye bağlanmaz; yalnız analyze)",
-    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_ing = sub.add_parser("ingest", help="CSV → Postgres")
@@ -87,6 +81,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_an.add_argument("--derin", action="store_true", help="Saatlik yerel kırılım")
     p_an.add_argument("--false-fault", action="store_true", help="Sahte arıza özeti")
     p_an.add_argument("--charts", type=Path, metavar="DIR", help="PNG'leri bu klasöre üret")
+    p_an.add_argument(
+        "--wi-duration", type=float, metavar="SN",
+        help="What-if süre eşiği (sn). --wi-distance ile BİRLİKTE verilir.",
+    )
+    p_an.add_argument(
+        "--wi-distance", type=float, metavar="M",
+        help="What-if mesafe eşiği (m). --wi-duration ile BİRLİKTE verilir.",
+    )
     _add_scope_args(p_an)
     return parser
 
@@ -124,15 +126,9 @@ def select_csv(files: list[Path], explicit: Path | None, prompt_fn=None) -> Path
 
 
 # --------------------------------------------------------------------- komutlar
-def _require_postgres(source: str, command: str) -> None:
-    if source != "postgres":
-        raise SystemExit(f"Hata: '{command}' komutu Postgres gerektirir (--source mock desteklenmez).")
-
-
 def cmd_ingest(args: argparse.Namespace) -> None:
     from binbin.data.ingest import list_source_csvs, run_ingest
 
-    _require_postgres(args.source, "ingest")
     scope = _scope_from_args(args)
     files = list_source_csvs(args.data_dir)
     prompt_fn = input if sys.stdin is not None and sys.stdin.isatty() else None
@@ -155,7 +151,6 @@ def cmd_ingest(args: argparse.Namespace) -> None:
 def cmd_classify(args: argparse.Namespace) -> None:
     from binbin.data.postgres_repo import PostgresRideRepository
 
-    _require_postgres(args.source, "classify")
     repo = PostgresRideRepository()
     ascope = repo.resolve_scope(_scope_from_args(args))
     result = repo.classify_all(ascope, batch_size=args.batch_size)
@@ -165,7 +160,6 @@ def cmd_classify(args: argparse.Namespace) -> None:
 def cmd_assess(args: argparse.Namespace) -> None:
     from binbin.data.postgres_repo import PostgresRideRepository
 
-    _require_postgres(args.source, "assess")
     repo = PostgresRideRepository()
     ascope = repo.resolve_scope(_scope_from_args(args))
     result = repo.assess_all(ascope, refresh=args.refresh)
@@ -179,7 +173,6 @@ def cmd_assess(args: argparse.Namespace) -> None:
 def cmd_loads(args: argparse.Namespace) -> None:
     from binbin.data.postgres_repo import PostgresRideRepository
 
-    _require_postgres(args.source, "loads")
     rows = PostgresRideRepository().list_data_loads()
     if not rows:
         print("Henüz yükleme yok.")
@@ -193,25 +186,37 @@ def cmd_loads(args: argparse.Namespace) -> None:
         )
 
 
-def _make_repo(source: str):
-    if source == "mock":
-        from binbin.data.mock_source import MockRideRepository
+def _whatif_from_args(args: argparse.Namespace) -> tuple[float, float] | None:
+    """--wi-duration/--wi-distance çiftini doğrular; ikisi de yoksa None döner.
 
-        return MockRideRepository()
-    from binbin.data.postgres_repo import PostgresRideRepository
-
-    return PostgresRideRepository()
+    Yarım kural (yalnız biri verilmiş) anlamsızdır → net hata.
+    """
+    dur, dist = args.wi_duration, args.wi_distance
+    if (dur is None) != (dist is None):
+        raise SystemExit(
+            "Hata: --wi-duration ve --wi-distance BİRLİKTE verilmeli "
+            "(what-if kuralı hem süre hem mesafe eşiği ister)."
+        )
+    return (dur, dist) if dur is not None else None
 
 
 def cmd_analyze(args: argparse.Namespace) -> None:
-    repo = _make_repo(args.source)
+    from binbin.data.postgres_repo import PostgresRideRepository
+
+    whatif_thr = _whatif_from_args(args)
+    repo = PostgresRideRepository()
     ascope = repo.resolve_scope(_scope_from_args(args))
 
     cause = analysis.cause_distribution(repo, ascope)
-    criteria = analysis.failure_criteria_check(repo, ascope)
     control = analysis.control_group_comparison(repo, ascope)
     _print_cause(cause)
-    _print_criteria(criteria)
+    # Eşik bloğu: what-if verildiyse gerçek vs what-if kıyası, yoksa tek senaryo.
+    whatif = None
+    if whatif_thr is not None:
+        whatif = analysis.failure_criteria_whatif(repo, ascope, whatif_thr)
+        _print_criteria_whatif(whatif)
+    else:
+        _print_criteria(analysis.failure_criteria_check(repo, ascope))
     _print_control(control)
 
     chart_data: dict = {}
@@ -237,6 +242,8 @@ def cmd_analyze(args: argparse.Namespace) -> None:
             charts.chart_cause_distribution(cause, args.charts),
             charts.chart_control_group(control, args.charts),
         ]
+        if whatif is not None:
+            paths.append(charts.chart_criteria_whatif(whatif, args.charts))
         if "vehicle" in chart_data:
             paths.append(charts.chart_vehicle_hotspots(chart_data["vehicle"], args.charts))
         if "subregion" in chart_data:
@@ -257,13 +264,41 @@ def _print_cause(d: dict) -> None:
     print(f"  {'SİNYALSİZ':<12} {s['count']:>8,}  %{s['pct']}  (kategori uydurulmaz)")
 
 
+def _fmt_thr(v) -> str:
+    """Eşik gösterimi: tam sayıysa ondalıksız (120.0 → '120', 45.5 → '45.5')."""
+    return str(int(v)) if float(v).is_integer() else str(v)
+
+
 def _print_criteria(d: dict) -> None:
     print(f"\n=== Başarısızlık Kriteri ({d['criterion']}) ===")
     fm = d["failed_meeting_criterion"]
     hf = d["hidden_failed"]
+    dur = _fmt_thr(d["duration_threshold"])
     print(f"  kritere uyan başarısız : {fm['count']:,}  (başarısızın %{fm['pct_of_failed']})")
     print(f"  gizli başarısız (BAŞARILI ama kritere uyan): {hf['count']:,}  (%{hf['pct_of_success']})")
-    print(f"  açıldı hiç gitmedi (dist≈0, süre>120sn): {d['opened_never_moved']['count']:,}")
+    print(f"  açıldı hiç gitmedi (dist≈0, süre>{dur}sn): {d['opened_never_moved']['count']:,}")
+
+
+def _print_criteria_whatif(w: dict) -> None:
+    """Gerçek vs what-if doğrulama oranı — yan yana sütunlu tablo + delta."""
+    real, what, delta = w["real"], w["whatif"], w["delta"]
+    r_lbl = f"GERÇEK({_fmt_thr(real['duration_threshold'])}sn/{_fmt_thr(real['distance_threshold'])}m)"
+    w_lbl = f"SENİN({_fmt_thr(what['duration_threshold'])}sn/{_fmt_thr(what['distance_threshold'])}m)"
+    r_fm, w_fm = real["failed_meeting_criterion"], what["failed_meeting_criterion"]
+    r_pct = "%" + str(r_fm["pct_of_failed"])
+    w_pct = "%" + str(w_fm["pct_of_failed"])
+    delta_pct = f"{delta['confirm_pct_points']:+} puan"
+    print("\n=== Başarısızlık Kriteri: Gerçek vs What-if (doğrulama oranı) ===")
+    print(f"  {'':<24}{r_lbl:>20}{w_lbl:>20}{'Δ':>16}")
+    print(
+        f"  {'kritere uyan başarısız':<24}{r_fm['count']:>20,}{w_fm['count']:>20,}"
+        f"{delta['confirm_count_delta']:>+16,}"
+    )
+    print(f"  {'doğrulama oranı':<24}{r_pct:>20}{w_pct:>20}{delta_pct:>16}")
+    print(
+        f"  toplam başarısız: {real['failed_total']:,}  ·  "
+        f"göreli değişim: {delta['rel_pct']:+}%"
+    )
 
 
 def _print_control(d: dict) -> None:

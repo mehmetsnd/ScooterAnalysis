@@ -162,6 +162,41 @@ def chart_control_group(data: dict, out_dir: Path) -> Path:
     return _save(fig, out_dir, "control_group.png")
 
 
+def _thr_txt(scenario: dict) -> str:
+    """Eşik etiketi: '120sn / 60m' (tam sayı ondalıksız)."""
+    def n(v):
+        return str(int(v)) if float(v).is_integer() else str(v).replace(".", ",")
+    return f"{n(scenario['duration_threshold'])}sn / {n(scenario['distance_threshold'])}m"
+
+
+def chart_criteria_whatif(data: dict, out_dir: Path) -> Path:
+    """Gerçek eşik vs what-if eşik — DOĞRULAMA ORANI gruplu çubuk + delta alt başlıkta."""
+    real, what, delta = data["real"], data["whatif"], data["delta"]
+    r_pct = real["failed_meeting_criterion"]["pct_of_failed"]
+    w_pct = what["failed_meeting_criterion"]["pct_of_failed"]
+    labels = [f"Gerçek\n{_thr_txt(real)}", f"What-if\n{_thr_txt(what)}"]
+    rates = [r_pct, w_pct]
+    # Gerçek koyu blue (referans), what-if aqua (ikinci seri).
+    colors = [BLUE, AQUA]
+
+    fig, ax = _new_fig(8, 5.2)
+    bars = ax.bar(labels, rates, color=colors, width=0.5)
+    ax.bar_label(bars, labels=[_tr_pct(r) for r in rates], padding=4, color=INK2, fontsize=11)
+    ax.set_ylabel("Doğrulama oranı (%)")
+    ax.set_ylim(bottom=0)
+    ax.margins(y=0.22)
+    _style_axes(ax, value_axis="y")
+    pp = f"{delta['confirm_pct_points']:+.1f}".replace(".", ",")
+    rel = f"{delta['rel_pct']:+.1f}".replace(".", ",")
+    _header(
+        fig, ax,
+        "Başarısızlık Eşiği: Gerçek vs What-if",
+        f"Kaydedilmiş başarısızların eşiğe uyma oranı — what-if ile {pp} puan "
+        f"({rel}% göreli) değişim",
+    )
+    return _save(fig, out_dir, "criteria_whatif.png")
+
+
 def chart_vehicle_hotspots(data: dict, out_dir: Path) -> Path:
     """En çok başarısızlık üreten araçlar — YATAY ÇUBUK."""
     vehicles = sorted(data["vehicles"], key=lambda v: v["failures"])  # artan (en büyük üstte)

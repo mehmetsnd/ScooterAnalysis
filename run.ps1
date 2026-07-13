@@ -32,7 +32,9 @@ Write-Host "`n========== ADIM 3/4: ASSESS (sahte ariza degerlendirmesi) ========
 if ($LASTEXITCODE -ne 0) { Write-Host "ASSESS BASARISIZ!" -ForegroundColor Red; exit 1 }
 
 Write-Host "`n========== ADIM 4/4: ANALYZE (analiz + grafikler) ==========" -ForegroundColor Cyan
-& $py -m binbin.cli analyze --false-fault --detay --derin --charts out\
+# What-if esik karsilastirmasi: gercek (120sn/60m) vs senin kuralin (asagidaki degerler).
+# Degerleri degistirebilir veya bu iki bayragi kaldirirsan tek-senaryo cikti alirsin.
+& $py -m binbin.cli analyze --false-fault --detay --derin --charts out\ --wi-duration 100 --wi-distance 45
 if ($LASTEXITCODE -ne 0) { Write-Host "ANALYZE BASARISIZ!" -ForegroundColor Red; exit 1 }
 
 Write-Host "`n========== TAMAMLANDI ==========" -ForegroundColor Green

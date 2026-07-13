@@ -9,6 +9,7 @@ import pytest
 from binbin.reporting.charts import (
     chart_cause_distribution,
     chart_control_group,
+    chart_criteria_whatif,
     chart_hourly_failure_rate,
     chart_subregion_false_fault,
     chart_vehicle_hotspots,
@@ -55,6 +56,22 @@ _SUBREGION_DATA = {
     ],
 }
 
+_WHATIF_DATA = {
+    "real": {
+        "duration_threshold": 120,
+        "distance_threshold": 60,
+        "failed_meeting_criterion": {"count": 15980, "pct_of_failed": 75.0},
+        "failed_total": 21313,
+    },
+    "whatif": {
+        "duration_threshold": 100,
+        "distance_threshold": 45,
+        "failed_meeting_criterion": {"count": 12100, "pct_of_failed": 56.8},
+        "failed_total": 21313,
+    },
+    "delta": {"confirm_pct_points": -18.2, "confirm_count_delta": -3880, "rel_pct": -24.3},
+}
+
 _HOURLY_DATA = {
     "buckets": [
         {"city": "İstanbul", "hour": h, "total": 500, "failed": int(500 * (3 + h % 5) / 100),
@@ -99,4 +116,9 @@ def test_chart_subregion_false_fault(tmp_path):
 
 def test_chart_hourly_failure_rate(tmp_path):
     path = chart_hourly_failure_rate(_HOURLY_DATA, tmp_path)
+    _assert_png(path)
+
+
+def test_chart_criteria_whatif(tmp_path):
+    path = chart_criteria_whatif(_WHATIF_DATA, tmp_path)
     _assert_png(path)

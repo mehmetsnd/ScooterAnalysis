@@ -15,6 +15,11 @@ def _pct(part: int, whole: int) -> float:
     return round(100.0 * part / whole, 1) if whole else 0.0
 
 
+def _num(v) -> str:
+    """Eşik gösterimi: tam sayıysa ondalıksız (120.0 → '120', 45.5 → '45.5')."""
+    return str(int(v)) if float(v).is_integer() else str(v)
+
+
 def cause_distribution(repo, scope=None) -> dict:
     """Başarısız sürüşlerin arıza kategorilerine göre dağılımı.
     
@@ -40,18 +45,23 @@ def cause_distribution(repo, scope=None) -> dict:
     }
 
 
-def failure_criteria_check(repo, scope=None) -> dict:
-    """Sistemdeki 'Başarısız' kuralının (süre < 120sn VE mesafe < 60m) outcome ile kıyası.
-    
+def failure_criteria_check(repo, scope=None, dur_thr: float = 120, dist_thr: float = 60) -> dict:
+    """'Başarısız' kuralının (süre < dur_thr VE mesafe < dist_thr) outcome ile kıyası.
+
+    Eşikler PARAMETRİKTİR: default 120sn/60m gerçek kuraldır, ama what-if senaryosu
+    için farklı değerlerle çağrılabilir (bkz. failure_criteria_whatif).
+
     Burada 2 farklı edge-case (kuyruk) tespit ediyoruz:
       a) Gizli Başarısız: Veritabanında SUCCESS dönmüş ama kriterlere göre aslında başarısız.
-      b) Hiç Gitmemiş: Mesafe 0 ama sürüş 120 saniyeden uzun sürmüş (açıp unutmuş olabilir).
+      b) Hiç Gitmemiş: Mesafe 0 ama sürüş dur_thr saniyeden uzun sürmüş (açıp unutmuş olabilir).
     """
-    c = repo.failure_criteria_counts(scope)
+    c = repo.failure_criteria_counts(scope, dur_thr, dist_thr)
     failed_total = c["failed_total"]
     success_total = c["success_total"]
     return {
-        "criterion": "duration_sec < 120 AND distance_m < 60",
+        "criterion": f"duration_sec < {_num(dur_thr)} AND distance_m < {_num(dist_thr)}",
+        "duration_threshold": dur_thr,
+        "distance_threshold": dist_thr,
         "failed_meeting_criterion": {
             "count": c["criteria_and_failed"],
             "pct_of_failed": _pct(c["criteria_and_failed"], failed_total),
@@ -60,11 +70,41 @@ def failure_criteria_check(repo, scope=None) -> dict:
             "count": c["criteria_and_success"],
             "pct_of_success": _pct(c["criteria_and_success"], success_total),
         },
-        "opened_never_moved": {  # (b) dist≈0 & dur>120
+        "opened_never_moved": {  # (b) dist≈0 & dur>dur_thr
             "count": c["zero_distance_long_duration"],
         },
         "failed_total": failed_total,
         "success_total": success_total,
+    }
+
+
+def failure_criteria_whatif(repo, scope=None, whatif=None, default=(120, 60)) -> dict:
+    """Gerçek eşik (default) ile what-if eşiğinin DOĞRULAMA ORANI karşılaştırması.
+
+    "Doğrulama oranı" = kaydedilmiş başarısızların (BASARISIZ_HARD) yüzde kaçı eşiğe
+    (süre<x VE mesafe<y) uyuyor. İki senaryoyu yan yana koyup delta'yı döner:
+      * confirm_pct_points : what-if oranı − gerçek oran (yüzde PUAN farkı)
+      * confirm_count_delta: kritere uyan başarısız SAYI farkı
+      * rel_pct            : göreli değişim (%) = puan farkı / gerçek oran
+
+    `whatif` = (süre_sn, mesafe_m) çifti; None ise ValueError.
+    """
+    if whatif is None:
+        raise ValueError("failure_criteria_whatif: whatif=(süre, mesafe) zorunlu.")
+    real = failure_criteria_check(repo, scope, default[0], default[1])
+    what = failure_criteria_check(repo, scope, whatif[0], whatif[1])
+    real_pct = real["failed_meeting_criterion"]["pct_of_failed"]
+    what_pct = what["failed_meeting_criterion"]["pct_of_failed"]
+    real_cnt = real["failed_meeting_criterion"]["count"]
+    what_cnt = what["failed_meeting_criterion"]["count"]
+    return {
+        "real": real,
+        "whatif": what,
+        "delta": {
+            "confirm_pct_points": round(what_pct - real_pct, 1),
+            "confirm_count_delta": what_cnt - real_cnt,
+            "rel_pct": round(100.0 * (what_pct - real_pct) / real_pct, 1) if real_pct else 0.0,
+        },
     }
 
 

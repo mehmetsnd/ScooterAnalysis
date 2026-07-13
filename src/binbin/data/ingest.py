@@ -21,7 +21,7 @@ from pathlib import Path
 from sqlalchemy import Engine, text
 
 from binbin.config import INGEST_LOCK_KEY, Scope
-from binbin.data.postgres_repo import get_engine
+from binbin.data.engine import get_engine
 from binbin.domain.enums import RawRentalStatus
 
 _COPY_CHUNK = 1 << 20  # 1 MB

@@ -8,7 +8,7 @@ anlaşılır hata, engine tekil/cached).
 import pytest
 
 from binbin.data.ingest import _PARTITION_NAME_RE
-from binbin.data.postgres_repo import _CITY_ALIAS, _database_url, _scope_clause, get_engine
+from binbin.data.engine import _CITY_ALIAS, _database_url, _scope_clause, get_engine
 from binbin.data.repository import AnalysisScope
 
 
@@ -61,7 +61,7 @@ def test_partition_name_reddedilir(name):
 
 # --- Config: DATABASE_URL yoksa anlaşılır RuntimeError ----------------------
 def test_database_url_eksikse_hata(monkeypatch):
-    monkeypatch.setattr("binbin.data.postgres_repo.load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr("binbin.data.engine.load_dotenv", lambda *a, **k: None)
     monkeypatch.delenv("DATABASE_URL", raising=False)
     with pytest.raises(RuntimeError, match="DATABASE_URL"):
         _database_url()
@@ -69,7 +69,7 @@ def test_database_url_eksikse_hata(monkeypatch):
 
 # --- Engine tekil (cached): iki çağrı aynı nesne ----------------------------
 def test_get_engine_tekil(monkeypatch):
-    monkeypatch.setattr("binbin.data.postgres_repo.load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr("binbin.data.engine.load_dotenv", lambda *a, **k: None)
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@localhost/db")
     get_engine.cache_clear()
     try:

@@ -44,8 +44,8 @@ python -m binbin.cli classify                     # başarısızları sınıflan
 python -m binbin.cli assess                       # sahte arıza değerlendirmesi
 python -m binbin.cli analyze --false-fault --detay --derin --charts out\
 
-# DB'ye bağlanmadan (Data Source soyutlaması ispatı):
-python -m binbin.cli --source mock analyze --false-fault --detay --derin
+# What-if eşik karşılaştırması (gerçek 120sn/60m vs kendi kuralın):
+python -m binbin.cli analyze --wi-duration 100 --wi-distance 45 --charts out\
 
 # API (http://127.0.0.1:8000/health) — analiz endpoint'leri sonraki PART
 python -m uvicorn binbin.api.app:app --reload
@@ -60,9 +60,25 @@ Ingest sonrası DB doğrulama: `country`=3, `city`≥2 (is_test hariç),
 src/binbin/
 ├── config.py    # DEFAULT_SCOPE — kapsamın TEK kaynağı
 ├── domain/      # saf veri: enums.py, models.py (şemayla birebir)
-├── data/        # repository.py (Protocol), postgres_repo.py, mock_source.py, ingest.py
+├── data/        # katmanlı veri erişimi (aşağıda ayrıntı)
+│   ├── repository.py  # Protocol (arayüz kontratı — DIP)
+│   ├── schema.py      # SQLAlchemy Table() tanımları (şema envanteri)
+│   ├── engine.py      # Engine + scope derleyici + run_scoped yürütücü
+│   ├── queries.py     # okuma sorguları (serbest fonksiyonlar)
+│   ├── classify.py    # yazma: sınıflandırma
+│   ├── assess.py      # yazma: sahte arıza değerlendirmesi
+│   ├── postgres_repo.py # ince Protocol impl (yukarıdakilere delege)
+│   └── ingest.py      # CSV → Postgres ETL
 ├── core/        # SAF çekirdek: keywords, classifier, false_fault, analysis (I/O yok)
 ├── reporting/   # charts.py (matplotlib PNG), report.py (Plotly HTML — sonraki PART)
 ├── api/         # app.py (FastAPI)
-└── cli/         # main.py (ingest/classify/assess/analyze + --source + kapsam)
+└── cli/         # main.py (ingest/classify/assess/analyze/loads + kapsam)
+
+db/              # PostgreSQL şeması (elle çalıştırılır)
+├── 01_reset_ve_kurulum.sql
+└── 02_false_fault.sql
 ```
+
+Veri kaynağı soyutlaması `repository.py` Protocol'ü ile tanımlanır; tek somut
+implementasyon `PostgresRideRepository`'dir. Testler DB'ye bağlanmadan inline
+`_FakeRepo` duck-typing ile bu kontratı doğrular.

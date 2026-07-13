@@ -37,8 +37,8 @@ class RideQueryRepository(Protocol):
     """Analiz katmanının ihtiyaç duyduğu, DB'de agregelenmiş veri sağlayan arayüz (CQRS - Query).
 
     Her sorgu `city.is_test = false` filtreler; saatlik kırılımlar yerel saate
-    (`AT TIME ZONE country.timezone`) çevrilir. Somut implementasyonlar:
-    PostgresRideRepository, MockRideRepository.
+    (`AT TIME ZONE country.timezone`) çevrilir. Tek somut implementasyon:
+    PostgresRideRepository (test tarafı inline `_FakeRepo` duck-typing kullanır).
     """
 
     def resolve_scope(self, scope: Scope) -> AnalysisScope:
@@ -49,8 +49,11 @@ class RideQueryRepository(Protocol):
         """Başarısız sürüşlerin failure_category kırılımı: [{category, count}] (None = sinyalsiz)."""
         raise NotImplementedError
 
-    def failure_criteria_counts(self, scope: AnalysisScope) -> dict:
-        """duration<120 & distance<60 kriterinin outcome ile uyumu + iki kuyruk sayacı."""
+    def failure_criteria_counts(
+        self, scope: AnalysisScope, dur_thr: float = 120, dist_thr: float = 60
+    ) -> dict:
+        """Eşik (duration<dur_thr & distance<dist_thr) kuralının outcome ile uyumu +
+        iki kuyruk sayacı. Eşikler parametrik (default 120sn/60m); what-if için değişir."""
         raise NotImplementedError
 
     def vehicle_failure_counts(self, scope: AnalysisScope, min_failures: int) -> list[dict]:
