@@ -1,18 +1,20 @@
-"""PostgreSQL Implementation (Repository) — Projedeki tüm SQL kodları BURADA yaşar.
+"""PostgreSQL repository — projedeki tüm SQL burada.
 
-Uyarı: DB şeması zaten (01_reset_ve_kurulum.sql vb.) SQL dosyalarıyla önceden oluşturulmuştur.
-Burada asla create_all / DROP / migration gibi işlemler YAPMAYIZ (o yüzden create_type=False).
-Tabloları SQLAlchemy'de sadece Python'dan rahatça INSERT/SELECT atabilmek için Table objesi olarak tanımladık.
+Şema önceden SQL dosyalarıyla kurulur; burada create_all/DROP/migration YAPILMAZ
+(create_type=False). Table tanımları yalnız Python'dan INSERT/SELECT içindir. Ağır
+aggregation'lar Python yerine SQL'e (window function) yıkılır; dışarıya list[dict] döner.
 
-Performans Notu: Ağır aggregation (toplama/kruplama/sayma) işlemlerini RAM'de Python ile yapmak yerine 
-pür (pure) SQL içindeki Window Function'lara yıkıyoruz. Repository dışarıya tertemiz list[dict] döner.
+Partitioning: `ride` DB'de aylık partition'lı, bu yüzden PK/FK'ler composite
+(ride_id, start_time). Partition pruning için sorgulara daima start_time/city filtresi girer.
 
-Partitioning: `ride` tablomuz DB seviyesinde AYLIK partition'lıdır. Bu yüzden PK ve FK'ler 
-(ride_id, start_time) şeklinde composite (bileşik) tasarlanmıştır. Partition pruning'in patlamaması için 
-tüm sorgulara her zaman `start_time` veya `city` filtresini inject ediyoruz.
+SQL GÜVENLİK SÖZLEŞMESİ (web'e taşırken kritik — ihlal etme):
+  * DEĞERLER daima bind-parametre (`:param`) ile geçer, asla string'e gömülmez.
+  * IDENTIFIER'lar (tablo/kolon/alias) yalnız SABİT LİTERAL; istekten gelen string
+    interpolate edilmez. Tek dinamik string-DDL noktası (partition adı) ingest'te doğrulanır.
 """
 
 import os
+from functools import lru_cache
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -33,7 +35,15 @@ from sqlalchemy import (
     text,
 )
 
-from binbin.config import ASSESSOR_VERSION, CLASSIFIER_VERSION, Scope
+from binbin.config import (
+    ASSESSOR_VERSION,
+    CLASSIFIER_VERSION,
+    DB_MAX_OVERFLOW,
+    DB_POOL_PRE_PING,
+    DB_POOL_RECYCLE_SEC,
+    DB_POOL_SIZE,
+    Scope,
+)
 from binbin.core.classifier import classify_ride
 from binbin.core.false_fault import assess_ride
 from binbin.data.repository import AnalysisScope
@@ -42,7 +52,7 @@ from binbin.domain.models import Ride
 
 metadata = MetaData()
 
-# --- Tablo tanımları (şemayla birebir; enum kolonları text olarak yeterli) ---
+# Tablo tanımları — şemayla birebir (enum kolonları String olarak yeterli).
 country_table = Table(
     "country", metadata,
     Column("country_id", Integer, primary_key=True),
@@ -151,27 +161,58 @@ data_load_table = Table(
 )
 
 
-def build_engine() -> Engine:
-    """`.env` içindeki DATABASE_URL ile SQLAlchemy Engine kurar."""
+def _database_url() -> str:
+    """`.env`/ortamdan DATABASE_URL okur; yoksa ham KeyError yerine anlaşılır hata."""
     load_dotenv()
-    url = os.environ["DATABASE_URL"]
-    return create_engine(url)
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        raise RuntimeError(
+            "DATABASE_URL tanımlı değil. `.env.example`'ı `.env` olarak kopyalayıp "
+            "DATABASE_URL değerini doldurun (örn. postgresql+psycopg://user:pass@host/db)."
+        )
+    return url
 
 
-def _scope_clause(scope: Optional[AnalysisScope], alias: str = "ci") -> tuple[str, dict]:
+@lru_cache(maxsize=1)
+def get_engine() -> Engine:
+    """Süreç başına TEK, havuzlu SQLAlchemy Engine (paylaşımlı, thread-safe).
+
+    Web'de her istek yeni engine kurarsa bağlantı tükenir; burada tek engine'in
+    connection pool'u yeniden kullanılır. CLI'da da zararsız (tek bağlantı yeter).
+    """
+    return create_engine(
+        _database_url(),
+        pool_pre_ping=DB_POOL_PRE_PING,
+        pool_size=DB_POOL_SIZE,
+        max_overflow=DB_MAX_OVERFLOW,
+        pool_recycle=DB_POOL_RECYCLE_SEC,
+    )
+
+
+def _as_dicts(result) -> list[dict]:
+    """SQLAlchemy sonucunu list[dict]'e çevirir."""
+    return [dict(m) for m in result.mappings().all()]
+
+
+# city alias'ı — sabit LİTERAL, asla dışarıdan gelmez (SQL güvenlik sözleşmesi).
+_CITY_ALIAS = "ci"
+
+
+def _scope_clause(scope: Optional[AnalysisScope]) -> tuple[str, dict]:
     """AnalysisScope'tan WHERE parçası + parametreler üretir (is_test filtresi ayrıdır).
 
-    None alanlar filtrelenmez. Şehir/ülke id'leri ANY(:param) ile bağlanır.
+    None alanlar filtrelenmez. Şehir/ülke id'leri DAİMA bind-param `ANY(:param)` ile
+    bağlanır; alias sabit literaldir → interpolasyona kullanıcı girdisi akmaz.
     """
     if scope is None:
         return "", {}
     clause = ""
     params: dict = {}
     if scope.country_ids is not None:
-        clause += f" AND {alias}.country_id = ANY(:sc_country_ids)"
+        clause += f" AND {_CITY_ALIAS}.country_id = ANY(:sc_country_ids)"
         params["sc_country_ids"] = list(scope.country_ids)
     if scope.city_ids is not None:
-        clause += f" AND {alias}.city_id = ANY(:sc_city_ids)"
+        clause += f" AND {_CITY_ALIAS}.city_id = ANY(:sc_city_ids)"
         params["sc_city_ids"] = list(scope.city_ids)
     return clause, params
 
@@ -180,7 +221,7 @@ class PostgresRideRepository:
     """AnalysisRepository Protocol'ünün Postgres implementasyonu (raw SQL + Core)."""
 
     def __init__(self, engine: Optional[Engine] = None) -> None:
-        self.engine = engine if engine is not None else build_engine()
+        self.engine = engine if engine is not None else get_engine()
 
     # ------------------------------------------------------------------ scope
     def resolve_scope(self, scope: Scope) -> AnalysisScope:
@@ -211,9 +252,11 @@ class PostgresRideRepository:
         clause, params = _scope_clause(scope)
         if extra:
             params.update(extra)
+        # `.replace` (`.format` değil): SQL'de literal `{}` geçse bile patlamaz,
+        # format-injection yüzeyi sıfır. `clause` kod-üretimli, yalnız bind placeholder içerir.
         with self.engine.connect() as conn:
-            result = conn.execute(text(sql.format(scope=clause)), params)
-            return [dict(m) for m in result.mappings().all()]
+            result = conn.execute(text(sql.replace("{scope}", clause)), params)
+            return _as_dicts(result)
 
     # -------------------------------------------------------------- analysis
     def failure_category_counts(self, scope: Optional[AnalysisScope]) -> list[dict]:
@@ -337,7 +380,7 @@ class PostgresRideRepository:
                     "FROM ops_cost_model"
                 )
             )
-            return [dict(m) for m in result.mappings().all()]
+            return _as_dicts(result)
 
     # ---------------------------------------------------------- classify (yaz)
     def classify_all(
@@ -568,7 +611,7 @@ class PostgresRideRepository:
 
     # -------------------------------------------------------------- data_load
     def list_data_loads(self) -> list[dict]:
-        """Yüklenen CSV'lerin denetim kaydı (en yeniden eskiye). 'ne yüklü?' sorusu."""
+        """Yüklenen CSV'lerin denetim kaydı (en yeniden eskiye)."""
         with self.engine.connect() as conn:
             result = conn.execute(
                 text(
@@ -581,4 +624,4 @@ class PostgresRideRepository:
                     """
                 )
             )
-            return [dict(m) for m in result.mappings().all()]
+            return _as_dicts(result)

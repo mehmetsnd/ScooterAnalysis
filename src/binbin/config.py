@@ -1,11 +1,8 @@
-"""Projenin Scope (Kapsam) Konfigürasyonları — TEK KAYNAK (Single Source of Truth).
+"""Scope (kapsam) konfigürasyonu — tek kaynak (SSoT).
 
-Burada koda hardcode if-else yazmak yerine (örneğin `if city == "İstanbul"`), 
-projeyi konfigürasyon üzerinden yönetiyoruz. Yarın projeye Bursa'yı da katmak istersek 
-koda hiç dokunmadan sadece `DEFAULT_SCOPE` tuple'ını güncellememiz yetecek. Çok daha clean.
-
-Not: `Scope` dışarıdan (CLI/CSV) gelen string adları tutar. Analiz katmanı (core) 
-ise id-tabanlı çalışır. Bu çeviriyi Repository katmanında yapıyoruz.
+Lokasyon filtreleri koda hardcode edilmez; yeni şehir/ülke eklemek DEFAULT_SCOPE
+tuple'ını güncellemekle sınırlıdır. Scope dışarıdan (CLI/CSV) string ad tutar; core
+id-tabanlı çalışır — bu çeviri Repository katmanında yapılır.
 """
 
 from dataclasses import dataclass
@@ -24,8 +21,7 @@ class Scope:
         return not self.countries and not self.cities
 
 
-# İstanbul iki idari bölgeye ayrılır (Avrupa / Anadolu).
-# TODO: Eğer yeni bir şehir/ülke açılışı olursa buraya eklemeyi unutmayın.
+# İstanbul iki idari bölgeye ayrılır (Avrupa / Anadolu). Yeni lokasyon → buraya eklenir.
 DEFAULT_SCOPE = Scope(
     countries=("Türkiye",),
     cities=("İstanbul Avrupa", "İstanbul Anadolu"),
@@ -34,7 +30,20 @@ DEFAULT_SCOPE = Scope(
 # Kısıtlamasız scope (--all flag'i gelirse bu kullanılır).
 UNRESTRICTED_SCOPE = Scope()
 
-# Veritabanına basarken damgaladığımız classifier/assessor versiyonları.
-# İleride algoritma değişirse "v2" yapıp eski veriyi ayırt edebiliriz.
+# Classifier/assessor sürüm damgası — algoritma değişince "v2" ile eski veri ayrışır.
 CLASSIFIER_VERSION = "v1"
 ASSESSOR_VERSION = "v1"
+
+
+# SQLAlchemy bağlantı havuzu ayarları (TEK yerde). CLI'da tek bağlantı yeter ama
+# web'de her istek havuzdan bağlantı alır; havuz olmadan bağlantı tükenir.
+#   pool_pre_ping : ölü bağlantıyı kullanmadan önce ping'le (kopmuş TCP'yi ele)
+#   pool_recycle  : bu saniyeden eski bağlantıyı yenile (DB idle-timeout'a takılma)
+DB_POOL_SIZE = 5
+DB_MAX_OVERFLOW = 10
+DB_POOL_RECYCLE_SEC = 1800
+DB_POOL_PRE_PING = True
+
+# Ingest advisory-lock anahtarı: eşzamanlı iki ingest'in paylaşımlı stg_rental_raw'ı
+# ezmesini engeller (pg_advisory_lock). Sabit, projeye özgü bir sayı.
+INGEST_LOCK_KEY = 918273

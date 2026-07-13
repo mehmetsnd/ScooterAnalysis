@@ -1,11 +1,7 @@
-"""Domain (İş Alanı) Modelleri — Sadece saf veri (data) taşıyıcılarıdır (DTO/Entity mantığı).
+"""Domain modelleri — saf veri taşıyıcıları (DTO/Entity).
 
-Not: Dataclass kuralı gereği default değeri (varsayılan) olmayan alanlar yukarıda tanımlanır.
-Bu yüzden field sıralaması veritabanındaki sırayla birebir aynı olmayabilir ama
-içerdikleri veriler DB tablolarıyla birebir eşleşir.
-
-Numeric(x,2) kolonlarını (süre, mesafe, para vb.) core katmanında `float` olarak taşıyoruz.
-Zaten threshold'larımız (eşiklerimiz) float olduğu için analizlerde yeterli oluyor.
+Alan sırası DB ile birebir olmayabilir (dataclass: default'suz alanlar üstte) ama
+içerik DB tablolarıyla eşleşir. Numeric(x,2) kolonları core'da float taşınır.
 """
 
 from dataclasses import dataclass, field

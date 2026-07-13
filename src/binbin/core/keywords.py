@@ -1,13 +1,10 @@
-"""NLP / Keyword kümeleri (Frozenset) — Pure (I/O yok).
-Sınıflandırma kurallarını kodun içine hardcode gömmek yerine buradan yönetiyoruz.
+"""Sınıflandırma anahtar kelime kümeleri (frozenset) — pure, I/O yok.
 
-Desteklenen diller: TR + EN + Balkan (Boşnakça/Makedonca).
-Not: Buradaki eşleştirmelerin hepsi case-insensitive ve aksan-duyarsız (normalize) çalışır.
+Diller: TR + EN + Balkan (Boşnakça/Makedonca). Eşleşmeler case-insensitive ve
+aksan-duyarsız (bkz. normalize).
 
-> DİKKAT: "para iadesi istiyorum", "param gitti" gibi yorumlar ödeme altyapısı hatası DEĞİLDİR!
-> Bunlar genellikle bozuk aracı kiralayıp parasını kaptıran sinirli müşterilerin yorumlarıdır.
-> Bu yüzden bu ifadeler ODEME kümesinde değil, TECHNICAL (TEKNİK) kümesindedir.
-> Classifier'daki öncelik sırası da bunu handle eder.
+DİKKAT: "para iadesi", "param gitti" ODEME değil TEKNIK kümesindedir — bunlar genelde
+bozuk araç kiralayıp parasını kaptıran müşterinin şikayetidir.
 """
 
 import unicodedata
@@ -167,18 +164,6 @@ LOCK_KEYWORDS: frozenset[str] = frozenset(
 )
 MOTOR_KEYWORDS: frozenset[str] = frozenset(
     {"gaz", "motor", "hizlanmiyor", "throttle"}
-)
-
-# --- Sistem mesaj kalıpları (sürüş sonlandırma mesajından) -----------------
-# "partial payment stop phase" → ödeme sistemi otomatik durdurma
-# "hareketsiz|inactive|neaktiv" → 10 dk otomatik sonlandırma
-SYSTEM_MESSAGE_PATTERNS: frozenset[str] = frozenset(
-    {
-        "partial payment stop phase",
-        "hareketsiz",
-        "inactive",
-        "neaktiv",
-    }
 )
 
 

@@ -141,10 +141,9 @@ def _cost_from_missions(breakdown: list[dict], cost_rows: list[dict]) -> dict:
 
 
 def subregion_hotspots(repo, scope=None, min_rides: int = 2000) -> dict:
-    """Alt bölgeler (ilçe/mahalle) bazında arıza ve sahte-alarm yoğunluğunu (hotspot) verir.
-    
-    Rate: 1000 sürüş başınadır. Özellikle regülasyon kaynaklı sahte alarmları 
-    harita üzerinde ispatlamak için harika bir veridir.
+    """Alt bölge bazında arıza ve sahte-alarm yoğunluğu (1000 sürüş başına).
+
+    Regülasyon kaynaklı sahte alarmların mekânsal izini çıkarmak için kullanılır.
     """
     rows = repo.subregion_stats(scope, min_rides)
     out = []

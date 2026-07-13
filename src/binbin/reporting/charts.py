@@ -1,14 +1,10 @@
-"""Matplotlib ile PNG grafik/rapor üretimi (Imperative Shell).
+"""Matplotlib ile PNG grafik üretimi (imperative shell).
 
-KURAL: matplotlib sadece ve sadece bu modülde kullanılır. İleride Plotly vb. 
-interaktif tool'lar gelecekse onlar ayrı modülde yazılır (Örn: report.py).
-Buradaki her fonksiyon `core/analysis.py`'dan dict çıktısını alır, grafiği çizer
-ve kaydedip dosya yolunu string olarak döner.
+matplotlib yalnız bu modülde kullanılır (Plotly gelirse ayrı modül). Her fonksiyon
+core/analysis.py'dan dict alır, çizer, kaydeder ve dosya yolunu döner.
 
-Tasarım Sistemi (DataViz): Colorblind-safe (renk körü dostu) bir palet kullanıyoruz.
-Büyüklük ölçen bar chart'larda tek hue (mavi) tonu basıyoruz, karmaşaya yer yok.
-Grafiklerin başlığı ve alt başlığı ("ne gösteriyor?") Türkçe, net ve okunaklı olmalı.
-Ham dict key'lerini (ariza_metinli vb.) arayüze/grafiğe yansıtırken Türkçeleştirmeyi unutmuyoruz.
+DataViz: colorblind-safe palet; büyüklük ölçen bar'larda tek hue (mavi). Başlık +
+alt başlık ("ne gösteriyor") Türkçe; ham dict anahtarları sunumda Türkçeleştirilir.
 """
 
 from pathlib import Path
@@ -102,13 +98,9 @@ def _style_axes(ax, value_axis: str) -> None:
     ax.grid(axis=value_axis, color=GRID, linewidth=0.8)
 
 
-def _prepare(out_dir: Path, name: str) -> Path:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    return out_dir / name
-
-
 def _save(fig, out_dir: Path, name: str) -> Path:
-    path = _prepare(out_dir, name)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / name
     fig.savefig(path)
     plt.close(fig)
     return path

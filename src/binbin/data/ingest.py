@@ -1,43 +1,45 @@
-"""Ingest (ETL) Süreci — Ham CSV -> PostgreSQL (COPY komutuyla).
+"""Ingest (ETL): ham CSV → PostgreSQL, psycopg COPY ile stream.
 
-Süreç (run_ingest):
-  0. `data_load` tablosunda yeni bir satır açıyoruz (RUNNING).
-  1. `stg_rental_raw` (staging) tablosunu TRUNCATE edip, devasa CSV dosyasını RAM'i şişirmeden
-     doğrudan PostgreSQL'in COPY metoduyla içeri akıtıyoruz (stream).
-  2. Gerekli aylık partition'ları (parçaları) dinamik oluşturuyoruz.
-  3. city / sub_region / end_reason gibi yan (referans) tabloları scope dahilinde dinamik dolduruyoruz.
-  4. Vehicle (Araç) UPSERT ve ardından Ride (Sürüş) INSERT yapıyoruz.
-  5. Sürüşle beraber puan/yorum varsa Feedback tablosuna basıyoruz.
-  6. Bozuk datalar (Örn: end_time < start_time) data_quality_flags ile flag'lenip SKIP edilir.
-  7. İşlem bitince `data_load` tablosundaki state'i SUCCESS veya FAILED olarak update edip raporluyoruz.
+Akış (run_ingest): data_load aç (RUNNING) → staging TRUNCATE + COPY → aylık
+partition'ları hazırla → referans tabloları + vehicle + ride + feedback (scope
+filtreli) → data_load'ı SUCCESS/FAILED kapat. Bozuk satırlar (ör. end_time <
+start_time) data_quality_flags ile işaretlenip yazılmaz.
 
-Önemli Not (Timezone Bug Önlemi):
-CSV'den gelen `start_date_tr` her zaman Europe/Istanbul (UTC+3) kabul edilip direkt 
-timestamptz'e çevrilir. Ülkenin veya bölgenin timezone'u burada dikkate ALINMAZ, kural böyledir.
+Timezone kuralı: CSV'deki start/end DAİMA Europe/Istanbul kabul edilip timestamptz'e
+çevrilir; ülke/bölge timezone'u burada dikkate ALINMAZ.
 
-Performans Notu: Python dünyasında genelde Pandas (df) kullanılır ama bu modül bilerek PANDAS KULLANMAZ!
-Sebebi basit: 300+ MB CSV'yi RAM'e almak yerine psycopg `copy()` ile stream ederek veritabanına basıyoruz. 
-Böylece çok daha az RAM tüketiyor ve çok daha hızlı çalışıyor.
+Pandas bilinçli olarak kullanılmaz: büyük CSV'yi RAM'e almak yerine COPY ile stream
+ederiz — bellek sabit kalır, ingest hızlanır.
 """
 
+import re
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
 from sqlalchemy import Engine, text
 
-from binbin.config import Scope
-from binbin.data.postgres_repo import build_engine
+from binbin.config import INGEST_LOCK_KEY, Scope
+from binbin.data.postgres_repo import get_engine
 from binbin.domain.enums import RawRentalStatus
 
 _COPY_CHUNK = 1 << 20  # 1 MB
 
+# Partition adı: CREATE TABLE'a giden tek dinamik identifier. int'ten türese de
+# doğrulanır (SQL güvenlik sözleşmesi). \A…\Z tam çapa — `$` sondaki `\n`'i kaçırır.
+_PARTITION_NAME_RE = re.compile(r"\Aride_\d{4}_\d{2}\Z")
+
+# Ride'a uygun ham staging satırı — eligibility kuralı tek kaynak (aşağıda 3 sorgu paylaşır).
+_STATUS_IN = (
+    f"s.rental_status IN ('{RawRentalStatus.SUCCESS.value}','{RawRentalStatus.FAILED_HARD.value}')"
+)
+_ELIGIBLE_RAW = f"{_STATUS_IN} AND s.start_date_tr <> '' AND s.end_date_tr <> ''"
+
 
 @dataclass
 class IngestReport:
-    """Ingest (ETL) işleminin metriklerini ve sonucunu tutan sınıf. 
-    State yönetimi: RUNNING | SUCCESS | FAILED | SKIPPED
-    """
+    """Ingest metrikleri ve sonucu. status: RUNNING | SUCCESS | FAILED | SKIPPED."""
 
     data_load_id: int
     file_name: str
@@ -54,35 +56,14 @@ class IngestReport:
 
 
 def list_source_csvs(data_dir: Path = Path("data_raw")) -> list[Path]:
-    """`data_dir` (default: data_raw) içindeki tüm `.csv` dosyalarını bulup isme göre sıralar.
-    
-    Not: Bu pure bir fonksiyondur, I/O prompt'u sormaz. Sadece data döner.
-    Klasör yoksa patlar (Exception fırlatır).
-    """
+    """`data_dir` içindeki `.csv` dosyalarını isme göre sıralı döner. Klasör yoksa hata."""
     if not data_dir.is_dir():
         raise FileNotFoundError(f"Veri klasörü yok: {data_dir}")
     return sorted(data_dir.glob("*.csv"))
 
 
-def find_source_csv(data_dir: Path = Path("data_raw")) -> Path:
-    """`data_dir` içindeki TEK `.csv` dosyasını bulur (isminin ne olduğu önemli değil).
-    
-    Eğer klasörde 2 veya daha fazla CSV varsa hangisini alacağını bilemediği için hata patlatır.
-    Çoklu dosya seçimi için CLI'daki `select_csv` metodunu kullanıyoruz.
-    """
-    csvs = list_source_csvs(data_dir)
-    if not csvs:
-        raise FileNotFoundError(f"{data_dir} içinde .csv bulunamadı.")
-    if len(csvs) > 1:
-        names = ", ".join(p.name for p in csvs)
-        raise ValueError(f"{data_dir} içinde birden fazla .csv var, tekini bırakın: {names}")
-    return csvs[0]
-
-
 def copy_csv_to_staging(engine: Engine, csv_path: Path) -> int:
-    """Önceki stg_rental_raw tablosunu TRUNCATE edip (uçurup), CSV'yi psycopg2 COPY metoduyla içeri basar. 
-    Döndüğü değer: DB'ye stream edilen satır sayısı.
-    """
+    """stg_rental_raw'ı TRUNCATE edip CSV'yi COPY ile içeri stream eder; yazılan satır sayısını döner."""
     raw = engine.raw_connection()
     try:
         dbapi = raw.driver_connection  # psycopg.Connection
@@ -126,7 +107,7 @@ def _ensure_partitions(engine: Engine, scope_clause: str, params: dict) -> None:
             text(
                 "SELECT min(start_date_tr::timestamp) AS lo, max(start_date_tr::timestamp) AS hi "
                 "FROM stg_rental_raw s "
-                f"WHERE s.rental_status IN ('{RawRentalStatus.SUCCESS.value}','{RawRentalStatus.FAILED_HARD.value}') {{scope_clause}}"
+                f"WHERE {_STATUS_IN} {scope_clause}"
             ),
             params,
         ).one()
@@ -139,6 +120,9 @@ def _ensure_partitions(engine: Engine, scope_clause: str, params: dict) -> None:
             ny, nm = (year + 1, 1) if month == 12 else (year, month + 1)
             end = date(ny, nm, 1)
             name = f"ride_{year:04d}_{month:02d}"
+            if not _PARTITION_NAME_RE.match(name):
+                # Ulaşılamaz olmalı (int-türevli); defense-in-depth.
+                raise ValueError(f"Geçersiz partition adı: {name!r}")
             exists = conn.execute(
                 text("SELECT to_regclass(:n)"), {"n": name}
             ).scalar()
@@ -154,7 +138,6 @@ def _ensure_partitions(engine: Engine, scope_clause: str, params: dict) -> None:
 
 
 def _insert_cities_and_regions(conn, clause: str, params: dict, report: IngestReport) -> None:
-    # --- city (country_id, source_region_id) ---
     res = conn.execute(
         text(
             f"""
@@ -172,7 +155,6 @@ def _insert_cities_and_regions(conn, clause: str, params: dict, report: IngestRe
     )
     report.cities = res.rowcount
 
-    # --- sub_region (city_id, source_sub_region_id) ---
     res = conn.execute(
         text(
             f"""
@@ -193,7 +175,7 @@ def _insert_cities_and_regions(conn, clause: str, params: dict, report: IngestRe
 
 
 def _insert_end_reasons(conn, clause: str, params: dict, report: IngestReport) -> None:
-    # --- end_reason (distinct reason_id, label NULL) ---
+    # label NULL bırakılır: reason_id anlamları saha ekibince doğrulanana kadar tahmin yok.
     res = conn.execute(
         text(
             f"""
@@ -209,7 +191,6 @@ def _insert_end_reasons(conn, clause: str, params: dict, report: IngestReport) -
 
 
 def _insert_vehicles(conn, clause: str, params: dict) -> None:
-    # --- vehicle (source_ref = vehicle_id, external_code = plate) ---
     conn.execute(
         text(
             f"""
@@ -226,7 +207,7 @@ def _insert_vehicles(conn, clause: str, params: dict) -> None:
 
 
 def _insert_rides(conn, clause: str, params: dict, data_load_id: int) -> None:
-    # --- ride (idempotent, scope-filtreli, timestamp UTC'ye) ---
+    # Idempotent: (source_ref, start_time) çakışırsa atla. end_time < start_time olan satır yazılmaz.
     conn.execute(
         text(
             f"""
@@ -240,8 +221,7 @@ def _insert_rides(conn, clause: str, params: dict, data_load_id: int) -> None:
                     (s.end_date_tr::timestamp   AT TIME ZONE 'Europe/Istanbul') AS end_ts,
                     NULLIF(s.distance_meters, '')::numeric AS dist_raw
                 FROM stg_rental_raw s
-                WHERE s.rental_status IN ('{RawRentalStatus.SUCCESS.value}','{RawRentalStatus.FAILED_HARD.value}')
-                  AND s.start_date_tr <> '' AND s.end_date_tr <> '' {clause}
+                WHERE {_ELIGIBLE_RAW} {clause}
             )
             INSERT INTO ride (
                 source_ref, vehicle_id, city_id, sub_region_id, user_ref,
@@ -284,7 +264,7 @@ def _insert_rides(conn, clause: str, params: dict, data_load_id: int) -> None:
 
 
 def _insert_feedback(conn, data_load_id: int) -> None:
-    # --- feedback (puan veya yorum doluysa) ---
+    # Yalnız puan VEYA yorum dolu satırlar (DB constraint: en az biri zorunlu).
     conn.execute(
         text(
             """
@@ -306,23 +286,18 @@ def _insert_feedback(conn, data_load_id: int) -> None:
 
 
 def transform_staging_to_ride(engine: Engine, scope: Scope, data_load_id: int) -> IngestReport:
-    """stg_rental_raw → referans tabloları + vehicle + ride + feedback (scope-filtreli).
-
-    Not: task'taki (engine, scope) imzası, ride.data_load_id referansı için
-    `data_load_id` ile genişletildi (data_load satırı run_ingest'te açılır).
-    """
+    """stg_rental_raw → referans tabloları + vehicle + ride + feedback (scope-filtreli)."""
     clause, params = _staging_scope_clause(scope)
     report = IngestReport(data_load_id=data_load_id, file_name="")
 
     _ensure_partitions(engine, clause, params)
 
     with engine.begin() as conn:
-        # rows_read
         report.rows_read = conn.execute(
             text("SELECT count(*) FROM stg_rental_raw")
         ).scalar_one()
 
-        # Bilinmeyen ülke uyarısı (kapsam içi)
+        # country tablosunda karşılığı olmayan ülkeler → satırlar atlanır, uyarı yazılır.
         unknown = conn.execute(
             text(
                 "SELECT DISTINCT s.country_id, s.country_name FROM stg_rental_raw s "
@@ -340,13 +315,9 @@ def transform_staging_to_ride(engine: Engine, scope: Scope, data_load_id: int) -
         _insert_rides(conn, clause, params, data_load_id)
         _insert_feedback(conn, data_load_id)
 
-        # --- sayaçlar ---
+        # sayaçlar
         report.rows_eligible = conn.execute(
-            text(
-                "SELECT count(*) FROM stg_rental_raw s "
-                f"WHERE s.rental_status IN ('{RawRentalStatus.SUCCESS.value}','{RawRentalStatus.FAILED_HARD.value}') "
-                "AND s.start_date_tr <> '' AND s.end_date_tr <> '' " + clause
-            ),
+            text(f"SELECT count(*) FROM stg_rental_raw s WHERE {_ELIGIBLE_RAW} {clause}"),
             params,
         ).scalar_one()
         report.rows_inserted = conn.execute(
@@ -362,7 +333,7 @@ def transform_staging_to_ride(engine: Engine, scope: Scope, data_load_id: int) -
         ).scalar_one()
         report.rows_skipped = report.rows_eligible - report.rows_inserted
 
-        # --- partition doğrulama: ride_default DAİMA boş olmalı ---
+        # ride_default DAİMA boş olmalı; doluysa aylık partition eksik demektir.
         default_rows = conn.execute(text("SELECT count(*) FROM ride_default")).scalar_one()
         if default_rows:
             raise RuntimeError(
@@ -373,19 +344,38 @@ def transform_staging_to_ride(engine: Engine, scope: Scope, data_load_id: int) -
 
 
 
+@contextmanager
+def _ingest_lock(engine: Engine):
+    """Eşzamanlı ingest'lerin paylaşımlı stg_rental_raw'ı ezmesini engelleyen Postgres
+    advisory lock. Session-level: commit/rollback'ten etkilenmez, yalnız unlock ya da
+    bağlantı kapanınca serbest kalır (süreç çökse bile DB bırakır). Tek kullanıcıda hep boş.
+    """
+    conn = engine.connect()
+    try:
+        conn.execute(text("SELECT pg_advisory_lock(:k)"), {"k": INGEST_LOCK_KEY})
+        conn.commit()
+        yield
+    finally:
+        try:
+            conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": INGEST_LOCK_KEY})
+            conn.commit()
+        finally:
+            conn.close()
+
+
 def run_ingest(
     csv_path: Path,
     scope: Scope,
     engine: Engine | None = None,
     force: bool = False,
 ) -> IngestReport:
-    """Uçtan uca ingest: guard → data_load aç → COPY → transform → data_load kapat.
+    """Uçtan uca ingest: guard → kilit → data_load aç → COPY → transform → kapat.
 
-    Guard: bu dosya (`file_name`) ile daha önce `SUCCESS` yükleme varsa ve `force`
-    değilse 327 MB'ı tekrar okumadan SKIPPED döner (idempotent israfı önler).
-    Yalnız SUCCESS bloklar; FAILED/RUNNING yeniden denenebilir.
+    Guard: aynı dosya daha önce SUCCESS ile yüklendiyse ve force yoksa, dosyayı tekrar
+    okumadan SKIPPED döner. Yalnız SUCCESS bloklar; FAILED/RUNNING yeniden denenebilir.
+    COPY + transform advisory lock altında serialize olur.
     """
-    engine = engine if engine is not None else build_engine()
+    engine = engine if engine is not None else get_engine()
     file_bytes = csv_path.stat().st_size
 
     if not force:
@@ -415,6 +405,14 @@ def run_ingest(
                 )
             return report
 
+    with _ingest_lock(engine):
+        return _run_ingest_locked(engine, csv_path, scope, file_bytes)
+
+
+def _run_ingest_locked(
+    engine: Engine, csv_path: Path, scope: Scope, file_bytes: int
+) -> IngestReport:
+    """Kilit altındaki asıl yükleme: data_load aç → COPY → transform → kapat."""
     with engine.begin() as conn:
         data_load_id = conn.execute(
             text(
