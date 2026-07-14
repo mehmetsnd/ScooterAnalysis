@@ -56,3 +56,7 @@ class RideQueryRepository(Protocol):
     def ops_cost_rows(self, scope: AnalysisScope) -> list[dict]:
         """ops_cost_model satırları (boşsa []). Boşsa analiz TL raporlamaz."""
         raise NotImplementedError
+
+    def out_of_content_counts(self, scope: AnalysisScope) -> dict:
+        """Analiz dışı (out-of-content) sürüş sayıları: total + mesafe/süre kırılımı."""
+        raise NotImplementedError

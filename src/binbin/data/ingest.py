@@ -235,7 +235,7 @@ def _insert_rides(conn, clause: str, params: dict, data_load_id: int) -> None:
                 src.rental_id, v.vehicle_id, c.city_id, sr.sub_region_id, src.user_id,
                 src.start_ts, src.end_ts,
                 EXTRACT(EPOCH FROM (src.end_ts - src.start_ts)),
-                CASE WHEN src.dist_raw > 50000 THEN NULL ELSE src.dist_raw END,
+                src.dist_raw,
                 (CASE src.rental_status WHEN '{RawRentalStatus.SUCCESS.value}' THEN 'BASARILI'
                                         WHEN '{RawRentalStatus.FAILED_HARD.value}' THEN 'BASARISIZ_HARD' END)::ride_outcome,
                 NULLIF(src.reason_id, '')::int,
@@ -243,10 +243,12 @@ def _insert_rides(conn, clause: str, params: dict, data_load_id: int) -> None:
                 NULLIF(src.gross_amount, '')::numeric,
                 NULLIF(src.currency, ''),
                 ARRAY_REMOVE(ARRAY[
-                    CASE WHEN src.dist_raw > 50000 THEN 'DISTANCE_IMPLAUSIBLE' END,
+                    -- Out-of-content: IoT/telemetri hatasi. Mesafe>20km VEYA sure>=6sa
+                    -- olan surus gercek bir surus degildir; isaretlenir, analizde dislanir.
+                    CASE WHEN src.dist_raw > 20000
+                              OR EXTRACT(EPOCH FROM (src.end_ts - src.start_ts)) >= 21600
+                         THEN 'OUT_OF_CONTENT' END,
                     CASE WHEN src.dist_raw IS NULL THEN 'DISTANCE_NULL' END,
-                    CASE WHEN EXTRACT(EPOCH FROM (src.end_ts - src.start_ts)) > 21600
-                         THEN 'DURATION_IMPLAUSIBLE' END,
                     CASE WHEN c.is_test THEN 'TEST_REGION' END
                 ], NULL),
                 :data_load_id

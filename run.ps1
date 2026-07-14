@@ -63,14 +63,14 @@ $wiDurationText = Resolve-CustomThreshold `
     -ProvidedValue $WiDuration `
     -Label "Sure esigi" `
     -Unit "saniye" `
-    -DefaultValue 100 `
+    -DefaultValue 75 `
     -Minimum 60 `
     -Maximum 200
 $wiDistanceText = Resolve-CustomThreshold `
     -ProvidedValue $WiDistance `
     -Label "Mesafe esigi" `
     -Unit "metre" `
-    -DefaultValue 45 `
+    -DefaultValue 60 `
     -Minimum 20 `
     -Maximum 150
 Write-Host "Ozel Kural: sure < $wiDurationText saniye VE mesafe < $wiDistanceText metre" -ForegroundColor Green

@@ -40,6 +40,9 @@ class PostgresRideRepository:
     def ops_cost_rows(self, scope: Optional[AnalysisScope]) -> list[dict]:
         return queries.ops_cost_rows(self.engine, scope)
 
+    def out_of_content_counts(self, scope: Optional[AnalysisScope]) -> dict:
+        return queries.out_of_content_counts(self.engine, scope)
+
     # ---------------------------------------------------------- classify (yaz)
     def classify_all(
         self,

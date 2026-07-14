@@ -77,6 +77,7 @@ def analysis_timeline(
                    ON f.ride_id = r.ride_id AND f.ride_start_time = r.start_time
             WHERE ci.is_test = false
               AND r.outcome IN ('BASARILI', 'BASARISIZ_HARD')
+              AND NOT ('OUT_OF_CONTENT' = ANY(r.data_quality_flags))
               {clause}
         ), timeline AS (
             SELECT
@@ -102,6 +103,34 @@ def analysis_timeline(
                 yield dict(row)
 
     return _iter_rows()
+
+
+def out_of_content_counts(engine: Engine, scope: Optional[AnalysisScope]) -> dict:
+    """Analiz dışı (out-of-content) sürüş sayıları.
+
+    IoT/telemetri hatası: mesafe>20km VEYA süre>=6sa. Bu sürüşler `analysis_timeline`'da
+    dışlanır; burada ayrı kova olarak (toplam + mesafe/süre kırılımı) sayılır.
+    """
+    clause, params = _scope_clause(scope)
+    sql = text(
+        f"""
+        SELECT
+            count(*) FILTER (WHERE r.distance_m > 20000)   AS by_distance,
+            count(*) FILTER (WHERE r.duration_sec >= 21600) AS by_duration,
+            count(*) FILTER (
+                WHERE r.distance_m > 20000 OR r.duration_sec >= 21600
+            ) AS total
+        FROM ride r
+        JOIN city ci ON ci.city_id = r.city_id
+        WHERE ci.is_test = false
+          AND r.outcome IN ('BASARILI', 'BASARISIZ_HARD')
+          {clause}
+        """
+    )
+    with engine.connect() as conn:
+        row = conn.execute(sql, params).mappings().one()
+    return {"total": row["total"], "by_distance": row["by_distance"],
+            "by_duration": row["by_duration"]}
 
 
 def ops_cost_rows(engine: Engine, scope: Optional[AnalysisScope]) -> list[dict]:

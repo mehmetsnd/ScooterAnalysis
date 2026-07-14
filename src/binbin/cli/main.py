@@ -233,6 +233,7 @@ def cmd_analyze(args: argparse.Namespace) -> None:
         repo.analysis_timeline(ascope),
         custom=custom_thr,
         cost_rows=repo.ops_cost_rows(ascope),
+        ooc_counts=repo.out_of_content_counts(ascope),
     )
     _print_scenario_definitions(report)
     _print_scenario_overview(report)
@@ -322,11 +323,15 @@ def _print_scenario_overview(report: dict) -> None:
             f"{_tr_int(o['unevaluated']):>20}{_tr_pct(o['failure_rate_pct']):>10}"
         )
     quality = report["data_quality"]
+    ooc = quality["out_of_content"]
     print(
         f"\nToplam analiz edilen: {_tr_int(quality['total'])} · "
         f"Kaynak başarısız: {_tr_int(quality['source_failed'])} · "
-        f"Mongo mesafesi eksik: {_tr_int(quality['distance_null'])} · "
-        f"Mantıksız mesafe: {_tr_int(quality['distance_implausible'])}"
+        f"Mongo mesafesi eksik: {_tr_int(quality['distance_null'])}"
+    )
+    print(
+        f"Out-of-content (analiz dışı): {_tr_int(ooc['total'])} "
+        f"(mesafe>20km {_tr_int(ooc['by_distance'])} · süre≥6sa {_tr_int(ooc['by_duration'])})"
     )
 
 

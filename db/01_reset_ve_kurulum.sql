@@ -244,10 +244,11 @@ COMMENT ON COLUMN ride.duration_sec IS
     'sürüşlerin medyanı 40,6 saniyedir; dakika çözünürlüğü yetersizdir.';
 COMMENT ON COLUMN ride.distance_m IS
     'Kanonik kaynak CSV mongo_distance_meters alanıdır. distance_meters ve distance '
-    'alanları analiz kararlarında kullanılmaz; mongo alanı boşsa değer NULL kalır.';
+    'alanları analiz kararlarında kullanılmaz; mongo alanı boşsa değer NULL kalır. '
+    'Saçma büyük değerler (>20km) NULL''lanmaz; OUT_OF_CONTENT ile işaretlenip analizde dışlanır.';
 COMMENT ON COLUMN ride.data_quality_flags IS
-    'DISTANCE_IMPLAUSIBLE (>50km), DISTANCE_NULL, DURATION_IMPLAUSIBLE (>6sa), '
-    'TEST_REGION. Satır SİLİNMEZ, işaretlenir; analizde filtrelenir.';
+    'OUT_OF_CONTENT (mesafe>20km VEYA süre>=6sa; IoT/telemetri hatası, analizde dışlanır), '
+    'DISTANCE_NULL, TEST_REGION. Satır SİLİNMEZ, işaretlenir; analizde filtrelenir.';
 
 -- Aylık partition'lar. Ingest, eksik ayı otomatik CREATE etmelidir.
 CREATE TABLE ride_2026_05 PARTITION OF ride FOR VALUES FROM ('2026-05-01') TO ('2026-06-01');

@@ -17,8 +17,8 @@ SELECT
     count(*) FILTER (WHERE outcome = 'BASARILI') AS source_success,
     count(*) FILTER (WHERE distance_m IS NULL) AS distance_null,
     count(*) FILTER (
-        WHERE 'DISTANCE_IMPLAUSIBLE' = ANY(data_quality_flags)
-    ) AS distance_implausible
+        WHERE 'OUT_OF_CONTENT' = ANY(data_quality_flags)
+    ) AS out_of_content
 FROM ride;
 
 SELECT count(*) AS partition_count

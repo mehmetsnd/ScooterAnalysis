@@ -86,6 +86,38 @@ def test_custom_only_missing_measurement_is_unevaluated():
     assert scenario.status("BASARISIZ_HARD", 100, 40) is ScenarioStatus.SUCCESS
 
 
+def test_failure_rule_needs_both_thresholds_and_keeps_source_hard():
+    """Regresyon kilidi: başarısızlık için İKİ eşiğe de takılmalı (süre<X VE mesafe<Y);
+    birini sağlayıp diğerini sağlamazsa BAŞARILI. Mevcut Kural'da BASARISIZ_HARD ayrıca
+    başarısızlık tetikler. Kural HİÇBİR ZAMAN OR değildir."""
+    current, custom = build_scenarios((90, 50))
+    F, S = ScenarioStatus.FAILED, ScenarioStatus.SUCCESS
+
+    # Mevcut Kural (120/60): yalnız ikisi de altındaysa başarısız.
+    assert current.status("BASARILI", 100, 100) is S   # biri takıldı -> başarılı
+    assert current.status("BASARILI", 90, 150) is S    # mesafe geçti -> başarılı
+    assert current.status("BASARILI", 500, 55) is S    # süre geçti -> başarılı
+    assert current.status("BASARILI", 60, 40) is F     # ikisi de altında -> başarısız
+    assert current.status("BASARISIZ_HARD", 90, 150) is F  # HARD daima başarısız
+
+    # Özel Kural (90/50): kaynaktan bağımsız, yine ikisi de gerekli.
+    assert custom.status("BASARILI", 80, 40) is F
+    assert custom.status("BASARISIZ_HARD", 80, 40) is F
+    assert custom.status("BASARILI", 80, 100) is S     # biri takıldı -> başarılı
+    assert custom.status("BASARISIZ_HARD", 80, 100) is S
+
+
+def test_out_of_content_counts_thread_into_report():
+    rows = [_row(1, "BASARILI", 90, 40)]
+    ooc = {"total": 4144, "by_distance": 4140, "by_duration": 4}
+    report = analyze_scenarios(rows, ooc_counts=ooc)
+    assert report["data_quality"]["out_of_content"] == ooc
+    # Param verilmezse sıfır kova (geriye dönük uyum).
+    assert analyze_scenarios(rows)["data_quality"]["out_of_content"] == {
+        "total": 0, "by_distance": 0, "by_duration": 0
+    }
+
+
 def test_two_scenario_totals_and_single_transition():
     report = _report()
     scenarios = report["scenarios"]

@@ -13,8 +13,8 @@ def test_run_script_prompts_for_duration_and_distance_with_safe_defaults():
     assert "Read-Host" in script
     assert '-Unit "saniye"' in script
     assert '-Unit "metre"' in script
-    assert "-DefaultValue 100" in script
-    assert "-DefaultValue 45" in script
+    assert "-DefaultValue 75" in script
+    assert "-DefaultValue 60" in script
     assert "-Minimum 60" in script
     assert "-Maximum 200" in script
     assert "-Minimum 20" in script

@@ -41,15 +41,16 @@ python -m pytest tests/ -q
 # Uçtan uca akış (Postgres gerekir):
 .\run.ps1  # Özel Kural: süre 60-200 saniye, mesafe 20-150 metre
 
-# Boş girişte varsayılan 100 saniye / 45 metre kullanılır.
+# Boş girişte varsayılan 75 saniye / 60 metre kullanılır (doğruluk-optimal Özel Kural:
+# kaynak etiketiyle en yüksek uyum; başarı oranını gerçek başarısızları gizlemeden artırır).
 # Otomasyon veya tekrar üretilebilir bir çalışma için değerler doğrudan verilebilir:
-.\run.ps1 -WiDuration 105 -WiDistance 50
+.\run.ps1 -WiDuration 75 -WiDistance 60
 
 # Yalnız analizi doğrudan çalıştırmak için:
 # Özel eşik karşılaştırması — iki okunur senaryo birlikte raporlanır:
 #   Mevcut Kural = BASARISIZ_HARD veya 120sn/60m
-#   Özel Kural   = kaynak etiketi yok; yalnız 100sn/45m
-python -m binbin.cli analyze --wi-duration 100 --wi-distance 45 \
+#   Özel Kural   = kaynak etiketi yok; yalnız 75sn/60m (varsayılan, doğruluk-optimal)
+python -m binbin.cli analyze --wi-duration 75 --wi-distance 60 \
   --false-fault --detay --derin --charts out\
 
 # API (http://127.0.0.1:8000/health) — analiz endpoint'leri sonraki PART

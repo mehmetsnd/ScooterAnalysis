@@ -395,6 +395,7 @@ def analyze_scenarios(
     rows: Iterable[Mapping],
     custom: tuple[float, float] | None = None,
     cost_rows: list[dict] | None = None,
+    ooc_counts: dict | None = None,
 ) -> dict:
     scenarios = build_scenarios(custom)
     accs = {s.key: _new_accumulator(s) for s in scenarios}
@@ -402,7 +403,6 @@ def analyze_scenarios(
         "total": 0,
         "source_failed": 0,
         "distance_null": 0,
-        "distance_implausible": 0,
         "subregions": defaultdict(lambda: {"total": 0}),
         "hourly": Counter(),
     }
@@ -422,9 +422,6 @@ def analyze_scenarios(
         duration = row.get("duration_sec")
         if distance is None:
             common["distance_null"] += 1
-        flags = row.get("data_quality_flags") or ()
-        if "DISTANCE_IMPLAUSIBLE" in flags:
-            common["distance_implausible"] += 1
 
         sub_key = None
         if row.get("sub_region_code") is not None:
@@ -528,6 +525,6 @@ def analyze_scenarios(
             "total": common["total"],
             "source_failed": common["source_failed"],
             "distance_null": common["distance_null"],
-            "distance_implausible": common["distance_implausible"],
+            "out_of_content": ooc_counts or {"total": 0, "by_distance": 0, "by_duration": 0},
         },
     }
