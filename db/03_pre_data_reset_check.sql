@@ -10,6 +10,10 @@ UNION ALL
 SELECT 'data_load', count(*) FROM data_load
 UNION ALL
 SELECT 'stg_rental_raw', count(*) FROM stg_rental_raw
+UNION ALL
+SELECT 'fleet_status_event', count(*) FROM fleet_status_event
+UNION ALL
+SELECT 'stg_status_raw', count(*) FROM stg_status_raw
 ORDER BY object_name;
 
 SELECT

@@ -26,15 +26,53 @@ from binbin.domain.enums import RawRentalStatus
 
 _COPY_CHUNK = 1 << 20  # 1 MB
 
+# Staging tablosu allowlist'i — COPY/TRUNCATE'e giden tek dinamik identifier
+# (table adı). Yalnız buradaki sabit literaller kabul edilir; istekten gelen
+# string asla interpolate edilmez (SQL güvenlik sözleşmesi).
+_STAGING_TABLES = frozenset({"stg_rental_raw", "stg_status_raw"})
+
+# Aylık partition'lı üst tablo allowlist'i — aynı sözleşme, partition DDL'i için.
+_PARTITIONED_PARENTS = frozenset({"ride", "fleet_status_event"})
+
+
+def _month_partition_name_re(prefix: str) -> re.Pattern[str]:
+    """`{prefix}_YYYY_MM` biçimini tam çapalı doğrulayan regex üretir.
+
+    \\A…\\Z tam çapa — `$` sondaki `\\n`'i kaçırır. Enjeksiyon/serbest metin reddedilir.
+    """
+    return re.compile(rf"\A{re.escape(prefix)}_\d{{4}}_\d{{2}}\Z")
+
+
 # Partition adı: CREATE TABLE'a giden tek dinamik identifier. int'ten türese de
-# doğrulanır (SQL güvenlik sözleşmesi). \A…\Z tam çapa — `$` sondaki `\n`'i kaçırır.
-_PARTITION_NAME_RE = re.compile(r"\Aride_\d{4}_\d{2}\Z")
+# doğrulanır (SQL güvenlik sözleşmesi).
+_PARTITION_NAME_RE = _month_partition_name_re("ride")
+_FLEET_STATUS_EVENT_PARTITION_NAME_RE = _month_partition_name_re("fleet_status_event")
 
 # Ride'a uygun ham staging satırı — eligibility kuralı tek kaynak (aşağıda 3 sorgu paylaşır).
 _STATUS_IN = (
     f"s.rental_status IN ('{RawRentalStatus.SUCCESS.value}','{RawRentalStatus.FAILED_HARD.value}')"
 )
 _ELIGIBLE_RAW = f"{_STATUS_IN} AND s.start_date_tr <> '' AND s.end_date_tr <> ''"
+
+# CSV türünü başlık satırının ilk sütunlarından ayırt eder (ingest komutunun
+# otomatik yönlendirmesi + testler için). Yeni bir kaynak CSV eklenirse buraya
+# bir satır eklenir; cli katmanı bu fonksiyonu değiştirmeden yeni türü kazanır.
+_RIDES_HEADER_PREFIX = "rental_id,"
+_STATUS_HEADER_PREFIX = "id,vehicle_id,status_id,"
+
+
+def detect_csv_kind(csv_path: Path) -> str:
+    """CSV başlık satırından veri türünü ayırır: 'rides' | 'status'.
+
+    Yalnız ilk satırı okur (büyük dosyada ucuz). Bilinmeyen başlık → ValueError.
+    """
+    with open(csv_path, encoding="utf-8") as f:
+        header = f.readline()
+    if header.startswith(_RIDES_HEADER_PREFIX):
+        return "rides"
+    if header.startswith(_STATUS_HEADER_PREFIX):
+        return "status"
+    raise ValueError(f"Bilinmeyen CSV türü: {csv_path.name} (başlık: {header[:50]!r})")
 
 
 @dataclass
@@ -62,19 +100,25 @@ def list_source_csvs(data_dir: Path = Path("data_raw")) -> list[Path]:
     return sorted(data_dir.glob("*.csv"))
 
 
-def copy_csv_to_staging(engine: Engine, csv_path: Path) -> int:
-    """stg_rental_raw'ı TRUNCATE edip CSV'yi COPY ile içeri stream eder; yazılan satır sayısını döner."""
+def copy_csv_to_staging(engine: Engine, csv_path: Path, table: str = "stg_rental_raw") -> int:
+    """`table`'ı TRUNCATE edip CSV'yi COPY ile içeri stream eder; yazılan satır sayısını döner.
+
+    `table` sabit allowlist'ten (`_STAGING_TABLES`) gelmelidir — SQL güvenlik sözleşmesi.
+    Varsayılan `stg_rental_raw`, mevcut çağrı yerlerini değiştirmeden korur.
+    """
+    if table not in _STAGING_TABLES:
+        raise ValueError(f"Bilinmeyen staging tablosu: {table!r}")
     raw = engine.raw_connection()
     try:
         dbapi = raw.driver_connection  # psycopg.Connection
         with dbapi.cursor() as cur:
             cur.execute("SET client_encoding TO 'UTF8'")
-            cur.execute("TRUNCATE stg_rental_raw")
-            copy_sql = "COPY stg_rental_raw FROM STDIN WITH (FORMAT csv, HEADER true)"
+            cur.execute(f"TRUNCATE {table}")
+            copy_sql = f"COPY {table} FROM STDIN WITH (FORMAT csv, HEADER true)"
             with cur.copy(copy_sql) as copy, open(csv_path, "rb") as f:
                 while chunk := f.read(_COPY_CHUNK):
                     copy.write(chunk)
-            cur.execute("SELECT count(*) FROM stg_rental_raw")
+            cur.execute(f"SELECT count(*) FROM {table}")
             n = cur.fetchone()[0]
         dbapi.commit()
         return int(n)
@@ -100,17 +144,24 @@ def _staging_scope_clause(scope: Scope) -> tuple[str, dict]:
     return clause, params
 
 
-def _ensure_partitions(engine: Engine, scope_clause: str, params: dict) -> None:
-    """Staging'deki min/max start_date_tr'den gereken aylık ride partition'larını oluşturur."""
+def ensure_month_partitions(
+    engine: Engine,
+    parent_table: str,
+    partition_name_re: re.Pattern[str],
+    bounds_sql: str,
+    bounds_params: dict,
+) -> None:
+    """`bounds_sql`'in döndürdüğü (lo, hi) tarih aralığı için eksik aylık RANGE
+    partition'ları oluşturur. `ride` ve `fleet_status_event` ingest yolları paylaşır.
+
+    `parent_table` sabit allowlist'ten (`_PARTITIONED_PARENTS`) gelmelidir; `bounds_sql`
+    çağıran tarafından hazırlanır (kendi uygunluk/scope filtresini kendi gömer) ve
+    `min(...) AS lo, max(...) AS hi` döndürmelidir.
+    """
+    if parent_table not in _PARTITIONED_PARENTS:
+        raise ValueError(f"Bilinmeyen partition'lı tablo: {parent_table!r}")
     with engine.begin() as conn:
-        row = conn.execute(
-            text(
-                "SELECT min(start_date_tr::timestamp) AS lo, max(start_date_tr::timestamp) AS hi "
-                "FROM stg_rental_raw s "
-                f"WHERE {_STATUS_IN} {scope_clause}"
-            ),
-            params,
-        ).one()
+        row = conn.execute(text(bounds_sql), bounds_params).one()
         lo, hi = row.lo, row.hi
         if lo is None or hi is None:
             return
@@ -119,8 +170,8 @@ def _ensure_partitions(engine: Engine, scope_clause: str, params: dict) -> None:
             start = date(year, month, 1)
             ny, nm = (year + 1, 1) if month == 12 else (year, month + 1)
             end = date(ny, nm, 1)
-            name = f"ride_{year:04d}_{month:02d}"
-            if not _PARTITION_NAME_RE.match(name):
+            name = f"{parent_table}_{year:04d}_{month:02d}"
+            if not partition_name_re.match(name):
                 # Ulaşılamaz olmalı (int-türevli); defense-in-depth.
                 raise ValueError(f"Geçersiz partition adı: {name!r}")
             exists = conn.execute(
@@ -129,11 +180,21 @@ def _ensure_partitions(engine: Engine, scope_clause: str, params: dict) -> None:
             if exists is None:
                 conn.execute(
                     text(
-                        f"CREATE TABLE {name} PARTITION OF ride "
+                        f"CREATE TABLE {name} PARTITION OF {parent_table} "
                         f"FOR VALUES FROM ('{start.isoformat()}') TO ('{end.isoformat()}')"
                     )
                 )
             year, month = ny, nm
+
+
+def _ensure_partitions(engine: Engine, scope_clause: str, params: dict) -> None:
+    """Staging'deki min/max start_date_tr'den gereken aylık ride partition'larını oluşturur."""
+    bounds_sql = (
+        "SELECT min(start_date_tr::timestamp) AS lo, max(start_date_tr::timestamp) AS hi "
+        "FROM stg_rental_raw s "
+        f"WHERE {_STATUS_IN} {scope_clause}"
+    )
+    ensure_month_partitions(engine, "ride", _PARTITION_NAME_RE, bounds_sql, params)
 
 
 
@@ -367,6 +428,47 @@ def _ingest_lock(engine: Engine):
             conn.close()
 
 
+def _find_successful_load(engine: Engine, file_name: str):
+    """Aynı dosya adıyla daha önce SUCCESS ile kapanmış bir `data_load` satırı var mı?
+
+    Varsa (data_load_id, file_bytes, finished_at) satırını döner; yoksa None. `run_ingest`
+    ve `run_status_ingest` aynı "zaten yüklü, --force ile yeniden yükle" sözleşmesini paylaşır.
+    """
+    with engine.connect() as conn:
+        return conn.execute(
+            text(
+                "SELECT data_load_id, file_bytes, finished_at FROM data_load "
+                "WHERE file_name = :name AND status = 'SUCCESS' "
+                "ORDER BY data_load_id DESC LIMIT 1"
+            ),
+            {"name": file_name},
+        ).one_or_none()
+
+
+def _open_data_load(engine: Engine, file_name: str, file_bytes: int) -> int:
+    """`data_load` satırını RUNNING durumunda açar, id'sini döner (ride/status ortak)."""
+    with engine.begin() as conn:
+        return conn.execute(
+            text(
+                "INSERT INTO data_load (file_name, file_bytes, status) "
+                "VALUES (:name, :bytes, 'RUNNING') RETURNING data_load_id"
+            ),
+            {"name": file_name, "bytes": file_bytes},
+        ).scalar_one()
+
+
+def _close_data_load_failed(engine: Engine, data_load_id: int, exc: Exception) -> None:
+    """`data_load` satırını FAILED ile kapatır (ride/status ortak hata yolu)."""
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE data_load SET status = 'FAILED', finished_at = now(), "
+                "notes = :notes WHERE data_load_id = :id"
+            ),
+            {"notes": str(exc)[:2000], "id": data_load_id},
+        )
+
+
 def run_ingest(
     csv_path: Path,
     scope: Scope,
@@ -383,15 +485,7 @@ def run_ingest(
     file_bytes = csv_path.stat().st_size
 
     if not force:
-        with engine.connect() as conn:
-            prior = conn.execute(
-                text(
-                    "SELECT data_load_id, file_bytes, finished_at FROM data_load "
-                    "WHERE file_name = :name AND status = 'SUCCESS' "
-                    "ORDER BY data_load_id DESC LIMIT 1"
-                ),
-                {"name": csv_path.name},
-            ).one_or_none()
+        prior = _find_successful_load(engine, csv_path.name)
         if prior is not None:
             report = IngestReport(
                 data_load_id=prior.data_load_id,
@@ -417,14 +511,7 @@ def _run_ingest_locked(
     engine: Engine, csv_path: Path, scope: Scope, file_bytes: int
 ) -> IngestReport:
     """Kilit altındaki asıl yükleme: data_load aç → COPY → transform → kapat."""
-    with engine.begin() as conn:
-        data_load_id = conn.execute(
-            text(
-                "INSERT INTO data_load (file_name, file_bytes, status) "
-                "VALUES (:name, :bytes, 'RUNNING') RETURNING data_load_id"
-            ),
-            {"name": csv_path.name, "bytes": file_bytes},
-        ).scalar_one()
+    data_load_id = _open_data_load(engine, csv_path.name, file_bytes)
 
     try:
         copy_csv_to_staging(engine, csv_path)
@@ -465,12 +552,5 @@ def _run_ingest_locked(
             )
         return report
     except Exception as exc:
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    "UPDATE data_load SET status = 'FAILED', finished_at = now(), "
-                    "notes = :notes WHERE data_load_id = :id"
-                ),
-                {"notes": str(exc)[:2000], "id": data_load_id},
-            )
+        _close_data_load_failed(engine, data_load_id, exc)
         raise

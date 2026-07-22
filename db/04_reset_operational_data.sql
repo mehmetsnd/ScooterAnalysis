@@ -12,8 +12,10 @@ TRUNCATE TABLE
     false_fault_assessment,
     feedback,
     ride,
+    fleet_status_event,
     data_load,
-    stg_rental_raw
+    stg_rental_raw,
+    stg_status_raw
 RESTART IDENTITY;
 
 COMMIT;
