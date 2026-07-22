@@ -9,6 +9,7 @@ from binbin.core.scenario_analysis import (
     build_scenarios,
 )
 from binbin.cli.main import (
+    _print_regulation_matrix,
     _print_scenario_causes,
     _print_scenario_comparisons,
     _print_scenario_control,
@@ -19,6 +20,8 @@ from binbin.cli.main import (
     _print_scenario_overview,
     _print_scenario_subregions,
     _print_scenario_vehicles,
+    _print_signal_audit,
+    _print_technical_detail,
 )
 
 
@@ -60,6 +63,9 @@ def _row(ride_id, outcome, duration, distance):
         "next_duration_sec": None,
         "next_distance_m": None,
         "next_outcome": None,
+        "field_category": None,
+        "field_reason": None,
+        "field_signal_reason_id": None,
     }
 
 
@@ -137,6 +143,100 @@ def test_two_scenario_totals_and_single_transition():
     assert comparison["failed_to_unevaluated"] == 1
 
 
+def test_field_signal_resolves_signalless_and_fills_regulation_matrix():
+    """Durum-defteri sinyali olan bir sürüş SINYALSIZ değil TEKNIK'e düşer ve
+    Regülasyon Matrisi'nde (kategori x verdict) karşılığını bulur."""
+    row = _row(1, "BASARISIZ_HARD", 50, 10)
+    row["field_category"] = "TEKNIK"
+    row["field_reason"] = "CONNECTION_LOST"
+    row["field_signal_reason_id"] = 33
+    report = analyze_scenarios([row])
+    scenario = report["scenarios"]["current_rule"]
+
+    assert scenario["cause"]["signalless"]["count"] == 0
+    categories = {c["category"]: c["count"] for c in scenario["cause"]["categories"]}
+    assert categories["TEKNIK"] == 1
+
+    matrix_rows = {r["category"]: r for r in scenario["regulation_matrix"]["rows"]}
+    assert "SINYALSIZ" not in matrix_rows
+    assert matrix_rows["TEKNIK"]["total"] == 1
+    # Bu satırda next_ride yok -> assess_ride her zaman DEGERLENDIRILEMEDI döner.
+    assert matrix_rows["TEKNIK"]["counts"]["DEGERLENDIRILEMEDI"] == 1
+
+
+def test_technical_detail_uses_rulebook_label_from_db():
+    """TEKNİK ARIZA KIRILIMI etiketi DB'den (kural kitabı açıklaması) gelmeli —
+    core 58 durum kodunun adını BİLMEZ, satırla taşınır."""
+    row = _row(1, "BASARISIZ_HARD", 50, 10)
+    row["field_category"] = "TEKNIK"
+    row["field_reason"] = "CONNECTION_LOST"
+    row["field_signal_reason_id"] = 33
+    row["field_signal_desc"] = "İletişim yok"
+    scenario = analyze_scenarios([row])["scenarios"]["current_rule"]
+
+    detail = scenario["technical_detail"]
+    assert detail["total"] == 1
+    (entry,) = detail["rows"]
+    assert entry["source"] == "Durum defteri"
+    assert entry["label"] == "İletişim yok"  # kaba enum değil, kural kitabı açıklaması
+    assert entry["rides"] == 1
+
+
+def test_technical_detail_total_matches_category_count():
+    """Kırılım satırlarının toplamı DAİMA kategori sayısına eşittir (kayıp satır yok)."""
+    rows = []
+    for i in range(4):
+        row = _row(i + 1, "BASARISIZ_HARD", 50, 10)
+        row["field_category"] = "TEKNIK"
+        row["field_reason"] = "IOT_FAULT"
+        row["field_signal_reason_id"] = 46
+        row["field_signal_desc"] = "Arızalı" if i % 2 else "IoT kablo söküldü"
+        rows.append(row)
+    scenario = analyze_scenarios(rows)["scenarios"]["current_rule"]
+
+    detail = scenario["technical_detail"]
+    categories = {c["category"]: c["count"] for c in scenario["cause"]["categories"]}
+    assert sum(r["rides"] for r in detail["rows"]) == categories["TEKNIK"]
+    assert detail["total"] == categories["TEKNIK"]
+    assert len(detail["rows"]) == 2  # iki farklı kural-kitabı etiketi
+
+
+def test_signal_audit_printer_marks_weak_and_dead_codes(capsys):
+    """Denetim raporu: zayıf sinyali uyarır, hiç görülmeyen kodu ayrıca listeler."""
+    _print_signal_audit(
+        [
+            {"reason_id": 33, "description": "İletişim yok", "is_fault_signal": True,
+             "verified": False, "fail_rides": 100, "ok_rides": 3, "n_fail": 1000, "n_ok": 10000},
+            {"reason_id": 8, "description": "Batarya az", "is_fault_signal": False,
+             "verified": False, "fail_rides": 93, "ok_rides": 1235, "n_fail": 1000, "n_ok": 10000},
+            {"reason_id": 7, "description": "30 dk. iletişim yok", "is_fault_signal": True,
+             "verified": False, "fail_rides": 0, "ok_rides": 0, "n_fail": 1000, "n_ok": 10000},
+        ]
+    )
+    output = capsys.readouterr().out
+    assert "SİNYAL AYIRT EDİCİLİĞİ" in output
+    assert "İletişim yok" in output
+    assert "fiilen ölü" in output and "30 dk. iletişim yok" in output
+    # Hiç görülmeyen kod ana tabloda satır açmamalı (yalnız dipnotta).
+    assert output.count("30 dk. iletişim yok") == 1
+
+
+def test_technical_detail_empty_without_technical_failures():
+    """Teknik başarısızlık yoksa kırılım boş — uydurma satır üretilmez."""
+    scenario = analyze_scenarios([_row(1, "BASARISIZ_HARD", 50, 10)])["scenarios"]["current_rule"]
+    assert scenario["technical_detail"]["rows"] == []
+    assert scenario["technical_detail"]["total"] == 0
+
+
+def test_regulation_matrix_without_signal_falls_back_to_signalless():
+    """Sinyal yoksa (mevcut davranış) matris hâlâ SINYALSIZ satırıyla şeffaf raporlar."""
+    report = analyze_scenarios([_row(1, "BASARISIZ_HARD", 50, 10)])
+    matrix_rows = {
+        r["category"]: r for r in report["scenarios"]["current_rule"]["regulation_matrix"]["rows"]
+    }
+    assert matrix_rows["SINYALSIZ"]["total"] == 1
+
+
 def test_cli_uses_readable_scenario_names(capsys):
     report = _report()
     for scenario in report["scenarios"].values():
@@ -156,10 +256,16 @@ def test_cli_uses_readable_scenario_names(capsys):
     _print_scenario_criteria(report)
     _print_scenario_control(report)
     _print_scenario_false_fault(report)
+    _print_regulation_matrix(report)
     _print_scenario_vehicles(report)
     _print_scenario_subregions(report)
     _print_scenario_hourly(report)
+    _print_technical_detail(report)
     output = capsys.readouterr().out
+    assert "REGÜLASYON MATRİSİ" in output
+    # P4: yanıltıcı tek "sinyalsiz %" yerine bildirimli/bildirimsiz ayrımı basılmalı.
+    assert "Bildirimli" in output and "Bildirimsiz" in output
+    assert "Bildirim VAR ama kategori atanamayan" in output
     assert "Mevcut Kural" in output
     assert "Özel Kural" in output
     assert "Kaynak + Özel Eşik" not in output

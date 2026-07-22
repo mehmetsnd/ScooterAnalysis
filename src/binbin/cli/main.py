@@ -7,8 +7,13 @@ Kullanım örnekleri (PYTHONPATH=src klasöründe):
     python -m binbin.cli ingest   [--data-dir data_raw] [--country ...] [--city ...] [--all]
     python -m binbin.cli classify [--batch-size 10000]  [--country ...] [--city ...] [--all]
     python -m binbin.cli assess   [--country ...] [--city ...] [--all]
-    python -m binbin.cli analyze  [--detay] [--derin] [--false-fault] [--charts DIR]
-                                  [--wi-duration SN --wi-distance M]
+    python -m binbin.cli classify [--refresh] ...
+    python -m binbin.cli analyze  [--detay] [--derin] [--false-fault] [--sinyal-denetimi]
+                                  [--charts DIR] [--wi-duration SN --wi-distance M]
+
+`ingest`, data_dir'deki CSV'lerin türünü (sürüş / araç durum-değişim defteri)
+başlık satırından otomatik ayırır ve her türü kendi transformer'ına yönlendirir
+(`--file` verilirse yalnız o dosya). Bkz. `binbin.data.ingest.detect_csv_kind`.
 
 `analyze` iki senaryolu çalışır: Mevcut Kural her zaman; --wi-duration/--wi-distance
 BİRLİKTE verilirse ek olarak Özel Kural senaryosu ve aralarındaki geçiş karşılaştırması
@@ -30,6 +35,7 @@ from binbin.config import DEFAULT_SCOPE, UNRESTRICTED_SCOPE, Scope
 from binbin.reporting.format import (
     fmt_threshold as _fmt_thr,
     signed_int as _signed_int,
+    tr_dec as _tr_dec,
     tr_int as _tr_int,
     tr_pct as _tr_pct,
 )
@@ -76,6 +82,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_cls = sub.add_parser("classify", help="Başarısız sürüşleri sınıflandır")
     p_cls.add_argument("--batch-size", type=int, default=10000)
+    p_cls.add_argument(
+        "--refresh", action="store_true",
+        help="Tüm başarısız sürüşleri yeniden sınıflandır (varsayılan: yalnız damgalanmamışlar)",
+    )
     _add_scope_args(p_cls)
 
     p_asy = sub.add_parser("assess", help="Sahte arıza değerlendirmesi")
@@ -90,7 +100,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_an = sub.add_parser("analyze", help="Analiz özeti (+ opsiyonel PNG)")
     p_an.add_argument("--detay", action="store_true", help="Araç + alt bölge kırılımları")
     p_an.add_argument("--derin", action="store_true", help="Saatlik yerel kırılım")
-    p_an.add_argument("--false-fault", action="store_true", help="Sahte arıza özeti")
+    p_an.add_argument(
+        "--false-fault", action="store_true",
+        help="Sahte arıza özeti + regülasyon matrisi + teknik arıza kırılımı",
+    )
+    p_an.add_argument(
+        "--sinyal-denetimi", action="store_true", dest="sinyal_denetimi",
+        help="Kural kitabındaki her kodun ayırt ediciliğini (lift) ölçüp raporla",
+    )
     p_an.add_argument("--charts", type=Path, metavar="DIR", help="PNG'leri bu klasöre üret")
     p_an.add_argument(
         "--wi-duration", type=float, metavar="SN",
@@ -105,12 +122,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def select_csv(files: list[Path], explicit: Path | None, prompt_fn=None) -> Path:
-    """İşlenecek CSV'yi seçer (saf, test edilebilir; web de çağırabilir).
+    """İşlenecek CSV'yi seçer (saf ve test edilebilir: I/O yalnız prompt_fn ile).
 
     - explicit verilmişse doğrula ve döndür.
     - tek dosya → otomatik.
     - çok dosya + prompt_fn → numaralı menü.
-    - çok dosya + prompt_fn yok (pipe/web/CI) → dosyaları listeleyip hata ver.
+    - çok dosya + prompt_fn yok (pipe/CI) → dosyaları listeleyip hata ver.
     - hiç dosya yok → hata.
     """
     if explicit is not None:
@@ -129,7 +146,7 @@ def select_csv(files: list[Path], explicit: Path | None, prompt_fn=None) -> Path
         try:
             choice = prompt_fn(f"İşlenecek CSV:\n{menu}\nNumara: ").strip()
         except (EOFError, KeyboardInterrupt):
-            # İnteraktif giriş yoksa (pipe/CI/web) temiz hataya düş.
+            # İnteraktif giriş yoksa (pipe/CI) temiz hataya düş.
             raise SystemExit(f"\nSeçim yapılmadı; --file ile birini seç:\n{listing}")
         if choice.isdigit() and 1 <= int(choice) <= len(files):
             return files[int(choice) - 1]
@@ -137,15 +154,7 @@ def select_csv(files: list[Path], explicit: Path | None, prompt_fn=None) -> Path
 
 
 # --------------------------------------------------------------------- komutlar
-def cmd_ingest(args: argparse.Namespace) -> None:
-    from binbin.data.ingest import list_source_csvs, run_ingest
-
-    scope = _scope_from_args(args)
-    files = list_source_csvs(args.data_dir)
-    prompt_fn = input if sys.stdin is not None and sys.stdin.isatty() else None
-    csv_path = select_csv(files, args.file, prompt_fn)
-    print(f"CSV: {csv_path} ({csv_path.stat().st_size / 1_048_576:.1f} MB)")
-    report = run_ingest(csv_path, scope, force=args.force)
+def _print_rides_ingest_report(report) -> None:
     print(
         f"[{report.status}] data_load={report.data_load_id}\n"
         f"  okunan   : {report.rows_read:,}\n"
@@ -159,13 +168,75 @@ def cmd_ingest(args: argparse.Namespace) -> None:
         print(f"  UYARI: {w}")
 
 
+def _print_status_ingest_report(report) -> None:
+    print(
+        f"[{report.status}] data_load={report.data_load_id}\n"
+        f"  okunan    : {report.rows_read:,}\n"
+        f"  yazılan   : {report.rows_inserted:,}\n"
+        f"  atlanan   : {report.rows_skipped:,}\n"
+        f"  yeni araç : {report.vehicles_created:,}"
+    )
+    for w in report.warnings:
+        print(f"  UYARI: {w}")
+
+
+def _ingest_one(kind: str, csv_path: Path, scope: Scope, force: bool) -> None:
+    """Türüne göre doğru transformer'a yönlendirir (rides → ride, status → fleet_status_event)."""
+    from binbin.data.ingest import run_ingest
+    from binbin.data.ingest_status import run_status_ingest
+
+    print(f"\nCSV [{kind}]: {csv_path} ({csv_path.stat().st_size / 1_048_576:.1f} MB)")
+    if kind == "rides":
+        _print_rides_ingest_report(run_ingest(csv_path, scope, force=force))
+    else:
+        _print_status_ingest_report(run_status_ingest(csv_path, scope, force=force))
+
+
+def cmd_ingest(args: argparse.Namespace) -> None:
+    """`--file` verilmişse yalnız o dosyayı; verilmemişse data_dir'deki HER TÜRÜ
+    (sürüş + araç durum-değişim CSV'si) başlığından otomatik ayırıp sırayla yükler.
+    Bir türde birden fazla dosya varsa mevcut `select_csv` seçim/uyarı mantığı kullanılır.
+    """
+    from binbin.data.ingest import detect_csv_kind, list_source_csvs
+
+    scope = _scope_from_args(args)
+    files = list_source_csvs(args.data_dir)
+    prompt_fn = input if sys.stdin is not None and sys.stdin.isatty() else None
+
+    if args.file is not None:
+        csv_path = select_csv([], explicit=args.file, prompt_fn=None)
+        _ingest_one(detect_csv_kind(csv_path), csv_path, scope, args.force)
+        return
+
+    if not files:
+        raise SystemExit("Hata: data_raw/ içinde .csv yok.")
+
+    # SIRA YÜK TAŞIR: rides ÖNCE gelmeli. Sürüş ingest'i vehicle satırlarını plakayla
+    # (external_code) birlikte açar; status ingest'i yalnız hiç sürülmemiş araçları
+    # source_ref ile ekler. Ters sırada o araçlar plakasız oluşur ve rides'ın
+    # ON CONFLICT DO NOTHING'i onları GÜNCELLEMEZ — plaka kalıcı olarak kaybolur.
+    by_kind: dict[str, list[Path]] = {"rides": [], "status": []}
+    for f in files:
+        by_kind[detect_csv_kind(f)].append(f)
+
+    for kind, kind_files in by_kind.items():
+        if not kind_files:
+            continue
+        csv_path = select_csv(kind_files, explicit=None, prompt_fn=prompt_fn)
+        _ingest_one(kind, csv_path, scope, args.force)
+
+
 def cmd_classify(args: argparse.Namespace) -> None:
     from binbin.data.postgres_repo import PostgresRideRepository
 
     repo = PostgresRideRepository()
     ascope = repo.resolve_scope(_scope_from_args(args))
-    result = repo.classify_all(ascope, batch_size=args.batch_size)
-    print(f"Sınıflandırma: işlenen={result['processed']:,} kategori-atanan={result['classified']:,}")
+    result = repo.classify_all(ascope, batch_size=args.batch_size, refresh=args.refresh)
+    mode = "tam yeniden sınıflandırma" if args.refresh else "artımlı"
+    print(
+        f"Sınıflandırma ({mode}): işlenen={result['processed']:,} "
+        f"kategori-atanan={result['classified']:,}"
+    )
 
 
 def cmd_assess(args: argparse.Namespace) -> None:
@@ -243,6 +314,10 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     _print_scenario_control(report)
     if args.false_fault:
         _print_scenario_false_fault(report)
+        _print_regulation_matrix(report)
+        _print_technical_detail(report)
+    if args.sinyal_denetimi:
+        _print_signal_audit(repo.signal_discrimination_rows(ascope))
     if args.detay:
         _print_scenario_vehicles(report)
         _print_scenario_subregions(report)
@@ -366,27 +441,45 @@ def _print_scenario_comparisons(report: dict) -> None:
 
 
 def _print_scenario_causes(report: dict) -> None:
+    """NEDEN DAĞILIMI — kategori × bildirim durumu.
+
+    Neden bildirimli/bildirimsiz ayrılıyor: "Sinyalsiz" kütlesinin ezici çoğunluğunda
+    ortada bir arıza İDDİASI YOKTUR (kimse bildirmemiş, sürüş kısa sürüp bitmiş).
+    Olmayan bir bildirimin nedenini açıklayamamak bir eksiklik değildir. Tek bir
+    "sinyalsiz %" rakamı bu ikisini birbirine karıştırıp tabloyu olduğundan kötü
+    gösteriyordu; asıl takip edilmesi gereken sayı SON SATIRDA basılan
+    "bildirim var ama kategori atanamadı" kütlesidir.
+    """
     _section("NEDEN DAĞILIMI")
-    scenarios = _scenario_list(report)
-    maps = []
-    keys = set()
-    for scenario in scenarios:
-        cause = scenario["cause"]
-        values = {r["category"]: (r["count"], r["pct"]) for r in cause["categories"]}
-        values["SINYALSIZ"] = (cause["signalless"]["count"], cause["signalless"]["pct"])
-        maps.append(values)
-        keys.update(values)
-    ordered = sorted(keys, key=lambda key: max(m.get(key, (0, 0))[0] for m in maps), reverse=True)
-    print(f"{'Kategori':<23}" + "".join(f"{s['label']:>23}" for s in scenarios))
-    print("─" * (23 + 23 * len(scenarios)))
-    for key in ordered:
-        cells = []
-        for values in maps:
-            count, pct = values.get(key, (0, 0.0))
-            cells.append(f"{_tr_int(count)} · {_tr_pct(pct)}")
-        print(f"{_CAUSE_LABELS.get(key, key):<23}" + "".join(f"{cell:>23}" for cell in cells))
-    if len(scenarios) > 1:
-        print("Not: yüzdeler her senaryonun kendi başarısız toplamına göredir.")
+    for scenario in _scenario_list(report):
+        rows = scenario["regulation_matrix"]["rows"]
+        if not rows:
+            continue
+        print(f"\n{scenario['label']}")
+        print(
+            f"{'Kategori':<16}{'Toplam':>10}{'Bildirimli':>22}"
+            f"{'Bildirimsiz':>14}{'Değ.dışı':>11}"
+        )
+        print("─" * 73)
+        unexplained = next((r for r in rows if r["category"] == "SINYALSIZ"), None)
+        for row in rows:
+            share = f"{_tr_int(row['reported'])} · {_tr_pct(row['reported_pct'])}"
+            print(
+                f"{_CAUSE_LABELS.get(row['category'], row['category']):<16}"
+                f"{_tr_int(row['total']):>10}{share:>22}"
+                f"{_tr_int(row['no_report']):>14}{_tr_int(row['unevaluated']):>11}"
+            )
+        print("─" * 73)
+        if unexplained is not None:
+            print(
+                f"Bildirim VAR ama kategori atanamayan: {_tr_int(unexplained['reported'])} · "
+                f"başarısızların {_tr_pct(unexplained['reported_share_of_failed_pct'])}’i "
+                "← asıl açıklanamayan kütle"
+            )
+    print(
+        "\nNot: 'Bildirimsiz' = kimse arıza bildirmedi; bu sürüşler için açıklanacak bir "
+        "arıza iddiası yoktur.\nYüzdeler her senaryonun kendi başarısız toplamına göredir."
+    )
 
 
 def _print_scenario_criteria(report: dict) -> None:
@@ -424,19 +517,31 @@ def _print_scenario_control(report: dict) -> None:
         print(f"{label:<25}" + "".join(f"{cell:>25}" for cell in cells))
 
 
+_FF_COL_W = 10  # SAHTE ARIZA ÖZETİ alt-kolon genişliği (Olay / Araç / B.görev)
+
+
 def _print_scenario_false_fault(report: dict) -> None:
     _section("SAHTE ARIZA ÖZETİ")
     scenarios = _scenario_list(report)
     maps = [{r["key"]: r for r in s["false_fault"]["primary"]} for s in scenarios]
-    print(f"{'Kategori':<18}" + "".join(f"{s['label']:>32}" for s in scenarios))
-    print("─" * (18 + 32 * len(scenarios)))
+    # Tek hücrede "olay N · araç N · görev N" 32'lik kolona sığmıyordu ve senaryolar
+    # birbirine giriyordu; her metrik kendi alt-kolonunda.
+    group_w = 3 * _FF_COL_W
+    print(f"{'':<18}" + "".join(f"{s['label']:^{group_w}}" for s in scenarios))
+    header = "".join(
+        f"{'Olay':>{_FF_COL_W}}{'Araç':>{_FF_COL_W}}{'B.görev':>{_FF_COL_W}}"
+        for _ in scenarios
+    )
+    print(f"{'Hipotez':<18}{header}")
+    print("─" * (18 + group_w * len(scenarios)))
     for key, label in (("GECICI_TEKNIK", "Geçici Teknik"), ("REGULASYON", "Regülasyon")):
-        cells = [
-            f"olay {_tr_int(m[key]['events'])} · araç {_tr_int(m[key]['vehicles'])} · "
-            f"görev {_tr_int(m[key]['wasted_missions'])}"
+        cells = "".join(
+            f"{_tr_int(m[key]['events']):>{_FF_COL_W}}"
+            f"{_tr_int(m[key]['vehicles']):>{_FF_COL_W}}"
+            f"{_tr_int(m[key]['wasted_missions']):>{_FF_COL_W}}"
             for m in maps
-        ]
-        print(f"{label:<18}" + "".join(f"{cell:>32}" for cell in cells))
+        )
+        print(f"{label:<18}{cells}")
     if any(row["cost"] is not None for mapping in maps for row in mapping.values()):
         print("\nTahmini operasyon maliyeti")
         for scenario, mapping in zip(scenarios, maps):
@@ -448,9 +553,137 @@ def _print_scenario_false_fault(report: dict) -> None:
     labels = scenarios[0]["false_fault"]["details"]
     for row in labels:
         print(
-            f"{row['label']:<30}"
-            + "".join(f"{_tr_int(m[row['key']]['events']):>20}" for m in detail_maps)
+            f"{row['label']:<22}"
+            + "".join(
+                f"{_tr_int(m[row['key']]['events']):>{group_w}}" for m in detail_maps
+            )
         )
+
+
+_VERDICT_LABELS = {
+    "GERCEK_ARIZA_SUPHESI": "Gerçek arıza",
+    "SAHTE_ALARM_SUPHESI": "Sahte alarm",
+    "BILDIRIM_YOK": "Bildirimsiz",
+    "DEGERLENDIRILEMEDI": "Değ.dışı",
+}
+
+
+def _print_signal_audit(rows: list[dict]) -> None:
+    """SİNYAL AYIRT EDİCİLİĞİ — kural kitabının ampirik denetimi.
+
+    Bir kodu `is_fault_signal=true` yapmak "bu olay başarısızlığı açıklar" iddiasıdır.
+    Bu tablo iddiayı ölçer: kod başarısız sürüşlerde başarılılara göre kaç kat sık
+    düşüyor (lift). Saha ekibi bir eşlemeyi `verified=true` yapmadan ÖNCE buraya bakar.
+
+    Karar bu raporda DEĞİL, `fleet_status_reason` tablosunda yaşar — düşük lift bir
+    kodu otomatik elemez (bkz. reason 9 'Batarya bitti': lift düşük ama gerçek saha
+    görevi doğurduğu için iş kararıyla tutuldu).
+    """
+    from binbin.core.signal_audit import summarize_signal_discrimination
+
+    _section("SİNYAL AYIRT EDİCİLİĞİ")
+    summary = summarize_signal_discrimination(rows)
+    shown = [r for r in summary if r["fail_rides"] or r["ok_rides"]]
+    print(
+        f"{'Kod':>4}  {'Neden':<26}{'Başarısızda':>13}{'Başarılıda':>13}"
+        f"{'Lift':>9}  {'Sinyal':<8}{'Not':<22}"
+    )
+    print("─" * 97)
+    for row in shown:
+        lift = "∞" if row["lift"] is None else f"{_tr_dec(row['lift'], 1)}x"
+        flag = "✓" if row["is_fault_signal"] else "✗"
+        note = ""
+        if row["low_volume"]:
+            # Hacim yetersiz → lift anlamsız. Ne "zayıf" ne "aday" denir; sayı
+            # gösterilir ama hüküm verilmez (ŞÜPHELİ≠SAHTE disiplininin istatistik hâli).
+            note = "hacim yetersiz"
+        elif row["is_fault_signal"] and row["weak"]:
+            note = "zayıf — gerekçeyi gözden geçir"
+        elif not row["is_fault_signal"] and not row["weak"] and row["lift"] != 0.0:
+            note = "aday olabilir"
+        # _tr_pct tek ondalık basar; burada ayırt edicilik KÜÇÜK oranlarda saklı
+        # (ör. başarılıda %0,03 → "%0,0" olurdu ve 34x lift anlamsız görünürdü).
+        fail_rate = f"%{_tr_dec(row['fail_rate_pct'], 2)}"
+        ok_rate = f"%{_tr_dec(row['ok_rate_pct'], 3)}"
+        print(
+            f"{row['reason_id']:>4}  {row['description'][:25]:<26}"
+            f"{fail_rate:>13}{ok_rate:>13}"
+            f"{lift:>9}  {flag:<8}{note:<22}"
+        )
+    dead = [r for r in summary if r["is_fault_signal"] and not r["fail_rides"] and not r["ok_rides"]]
+    if dead:
+        codes = ", ".join(f"{r['reason_id']} ({r['description']})" for r in dead)
+        print(f"\nHiç görülmeyen sinyal kodları (kural kitabında duruyor, fiilen ölü): {codes}")
+    print(
+        "\nLift = P(kod | başarısız) / P(kod | başarılı). ≈1 ise kod başarısızlığı "
+        "AÇIKLAMIYOR.\nDüşük lift tek başına eleme gerekçesi değildir; iş gerekçesi "
+        "ölçümü geçersiz kılabilir\n(karar fleet_status_reason.notes'ta gerekçesiyle yaşar)."
+    )
+
+
+def _print_technical_detail(report: dict) -> None:
+    """TEKNİK ARIZA KIRILIMI — teknik başarısızlığın NEDENİ, kanıt kaynağıyla birlikte.
+
+    "Teknik" tek satır olduğunda hangi arızanın kaç boşa görev doğurduğu görünmüyordu.
+    Araç durum-değişim defteri sayesinde artık kural kitabındaki 58 kodun her biri
+    ayrı satır olabiliyor; etiketler DB'den akar (core kod adı bilmez).
+
+    Sıralama boşa göreve göre DEĞİL sürüş sayısına göredir (motor öyle veriyor); boşa
+    görev sütunu projenin asıl çıktısı olduğu için en sağda vurgulanır.
+    """
+    _section("TEKNİK ARIZA KIRILIMI")
+    for scenario in _scenario_list(report):
+        detail = scenario.get("technical_detail") or {}
+        rows = detail.get("rows") or []
+        if not rows:
+            continue
+        print(f"\n{scenario['label']}  (toplam teknik: {_tr_int(detail['total'])})")
+        print(
+            f"{'Kaynak':<16}{'Neden':<26}{'Sürüş':>9}{'Gerçek':>9}"
+            f"{'Sahte':>9}{'Bildirimsiz':>13}{'Boşa görev':>13}"
+        )
+        print("─" * 95)
+        for row in rows:
+            print(
+                f"{row['source']:<16}{row['label'][:25]:<26}"
+                f"{_tr_int(row['rides']):>9}{_tr_int(row['real_fault']):>9}"
+                f"{_tr_int(row['false_alarm']):>9}{_tr_int(row['no_report']):>13}"
+                f"{_tr_int(row['wasted_missions']):>13}"
+            )
+    print(
+        "\nNot: 'Durum defteri' satırları araç IoT durum-değişim kaydından (kural kitabı "
+        "doğrulanabilir\nkanıt), 'Metin' satırları sürüş mesajı/kullanıcı yorumundan gelir."
+    )
+
+
+def _print_regulation_matrix(report: dict) -> None:
+    """Kategori × verdict çapraz-tablosu. Kural kitabı (fleet_status_reason) DB'de
+    yaşar; burada yalnız zaten hesaplanmış sayılar basılır (bkz. core/scenario_analysis).
+    """
+    _section("REGÜLASYON MATRİSİ")
+    scenarios = _scenario_list(report)
+    col_width = 16
+    for scenario in scenarios:
+        matrix = scenario["regulation_matrix"]
+        rows = matrix["rows"]
+        if not rows:
+            continue
+        print(f"\n{scenario['label']}")
+        header = (
+            f"{'Kategori':<16}"
+            + "".join(f"{_VERDICT_LABELS[v]:>{col_width}}" for v in matrix["verdict_order"])
+            + f"{'Toplam':>10}"
+        )
+        print(header)
+        print("─" * (16 + col_width * len(matrix["verdict_order"]) + 10))
+        for row in rows:
+            cells = "".join(
+                f"{_tr_int(row['counts'][v]):>{col_width}}" for v in matrix["verdict_order"]
+            )
+            label = _CAUSE_LABELS.get(row["category"], row["category"])
+            print(f"{label:<16}{cells}{_tr_int(row['total']):>10}")
+    if len(scenarios) > 1:
+        print("\nNot: her senaryo kendi başarısız kümesine göre ayrı hesaplanır.")
 
 
 _MAX_HOTSPOT_ROWS = 100  # araç sıcak nokta tablosunda gösterilecek azami satır

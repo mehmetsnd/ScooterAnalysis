@@ -18,6 +18,8 @@ from binbin.core.classifier import classify_ride
 from binbin.core.false_fault import assess_ride
 from binbin.domain.enums import (
     ClassificationSource,
+    FailureCategory,
+    FailureReason,
     FalseFaultHypothesis,
     FaultVerdict,
     PaymentStatus,
@@ -186,6 +188,13 @@ def _new_accumulator(scenario: FailureScenario) -> dict:
         "verdicts": Counter(),
         "subregions": defaultdict(lambda: {"failed": 0, "false_alarm": 0}),
         "hourly": Counter(),
+        # Regülasyon Matrisi: kategori (TEKNIK/REGULASYON/.../SINYALSIZ) x verdict.
+        "regulation_matrix": defaultdict(Counter),
+        # TEKNİK ARIZA KIRILIMI: (kaynak, etiket) -> sürüş/verdict/boşa görev.
+        # Etiket DB'den (kural kitabı açıklaması) akar; core 58 kodu HARDCODE ETMEZ.
+        "technical_detail": defaultdict(
+            lambda: {"rides": 0, "verdicts": Counter(), "wasted_missions": 0}
+        ),
     }
 
 
@@ -229,6 +238,55 @@ def _update_false_fault(acc: dict, assessment, vehicle_id: int) -> None:
     target["wasted_missions"] += assessment.wasted_missions
 
 
+def _update_regulation_matrix(acc: dict, category: str, verdict: FaultVerdict) -> None:
+    """Regülasyon Matrisi: her başarısız sürüşü (kategori, verdict) hücresine ekler.
+
+    SINYALSIZ dahil TÜM kategoriler yazılır (uydurma yok, şeffaf raporlama) —
+    araç durum-sinyali sayesinde bu kütlenin küçülmesi beklenir, gizlenmez.
+    """
+    acc["regulation_matrix"][category][verdict.value] += 1
+
+
+# Sınıflandırma kaynağının rapordaki insan-okur adı. Hangi kanıt TEKNIK kategoriyi
+# doğurdu: araç durum defteri mi, sürüş telemetrisi mi, serbest metin mi?
+_TECHNICAL_SOURCE_LABELS = {
+    ClassificationSource.REASON_CODE.value: "Durum defteri",
+    ClassificationSource.FIELD_SIGNAL.value: "Telemetri",
+    ClassificationSource.TEXT_MESSAGE.value: "Metin (mesaj)",
+    ClassificationSource.TEXT_COMMENT.value: "Metin (yorum)",
+}
+
+
+def _update_technical_detail(acc: dict, classification, assessment, signal_desc) -> None:
+    """TEKNİK ARIZA KIRILIMI: teknik başarısızlığı KANITINA göre ayrıştırır.
+
+    Durum defterinden gelen sinyallerde etiket, kural kitabındaki açıklamadır
+    (`fleet_status_reason.description`) — böylece 58 kodun tamamı rapora açılır ve
+    core hiçbir kod adını bilmek zorunda kalmaz. Diğer kaynaklarda etiket kaba
+    `FailureReason` enum'udur (metinden bundan fazlası çıkarılamaz).
+    """
+    source = classification.source.value
+    if source == ClassificationSource.REASON_CODE.value and signal_desc:
+        label = str(signal_desc)
+    elif classification.reason is not None:
+        label = classification.reason.value
+    else:
+        label = "BELİRTİLMEMİŞ"
+    entry = acc["technical_detail"][(_TECHNICAL_SOURCE_LABELS.get(source, source), label)]
+    entry["rides"] += 1
+    entry["verdicts"][assessment.verdict.value] += 1
+    if assessment.verdict is FaultVerdict.SAHTE_ALARM_SUPHESI:
+        entry["wasted_missions"] += assessment.wasted_missions
+
+
+_REGULATION_MATRIX_VERDICT_ORDER = (
+    FaultVerdict.GERCEK_ARIZA_SUPHESI.value,
+    FaultVerdict.SAHTE_ALARM_SUPHESI.value,
+    FaultVerdict.BILDIRIM_YOK.value,
+    FaultVerdict.DEGERLENDIRILEMEDI.value,
+)
+
+
 def _finalize_scenario(acc: dict, common: dict, cost_rows: list[dict]) -> dict:
     evaluated = acc["failed"] + acc["success"]
     total_failed = acc["failed"]
@@ -239,6 +297,50 @@ def _finalize_scenario(acc: dict, common: dict, cost_rows: list[dict]) -> dict:
     ]
     categories.sort(key=lambda r: r["count"], reverse=True)
     signalless_count = acc["categories"].get("SINYALSIZ", 0)
+
+    matrix_rows = []
+    for category, counts in acc["regulation_matrix"].items():
+        row_total = sum(counts.values())
+        # "Bildirimli" = birinin arıza iddiası olduğu verdict'ler. NEDEN DAĞILIMI bunu
+        # kullanır: sinyalsiz kütlesinin çoğunda ortada bir iddia YOKTUR, o yüzden tek
+        # bir "sinyalsiz %" yanıltıcıdır. Yüzdeyi core üretir, CLI yalnız biçimlendirir.
+        reported = sum(
+            counts.get(v, 0)
+            for v in (
+                FaultVerdict.GERCEK_ARIZA_SUPHESI.value,
+                FaultVerdict.SAHTE_ALARM_SUPHESI.value,
+            )
+        )
+        matrix_rows.append(
+            {
+                "category": category,
+                "counts": {v: counts.get(v, 0) for v in _REGULATION_MATRIX_VERDICT_ORDER},
+                "total": row_total,
+                "reported": reported,
+                "reported_pct": _pct(reported, row_total),
+                "reported_share_of_failed_pct": _pct(reported, total_failed),
+                "no_report": counts.get(FaultVerdict.BILDIRIM_YOK.value, 0),
+                "unevaluated": counts.get(FaultVerdict.DEGERLENDIRILEMEDI.value, 0),
+            }
+        )
+    matrix_rows.sort(key=lambda r: r["total"], reverse=True)
+
+    technical_rows = []
+    for (source, label), values in acc["technical_detail"].items():
+        counts = values["verdicts"]
+        technical_rows.append(
+            {
+                "source": source,
+                "label": label,
+                "rides": values["rides"],
+                "real_fault": counts.get(FaultVerdict.GERCEK_ARIZA_SUPHESI.value, 0),
+                "false_alarm": counts.get(FaultVerdict.SAHTE_ALARM_SUPHESI.value, 0),
+                "no_report": counts.get(FaultVerdict.BILDIRIM_YOK.value, 0),
+                "unevaluated": counts.get(FaultVerdict.DEGERLENDIRILEMEDI.value, 0),
+                "wasted_missions": values["wasted_missions"],
+            }
+        )
+    technical_rows.sort(key=lambda r: r["rides"], reverse=True)
 
     group_order = ("ariza_metinli", "herhangi_bildirimli", "bildirimsiz")
     groups = []
@@ -352,6 +454,15 @@ def _finalize_scenario(acc: dict, common: dict, cost_rows: list[dict]) -> dict:
         },
         "control": {"groups": groups},
         "false_fault": {"primary": primary, "details": details},
+        "regulation_matrix": {
+            "verdict_order": list(_REGULATION_MATRIX_VERDICT_ORDER),
+            "rows": matrix_rows,
+        },
+        # Satır toplamı DAİMA categories["TEKNIK"]'e eşittir (test bunu korur).
+        "technical_detail": {
+            "total": acc["categories"].get("TEKNIK", 0),
+            "rows": technical_rows,
+        },
         "vehicle": {"min_failures": MIN_VEHICLE_FAILURES, "vehicles": vehicles},
         "subregion": {"min_rides": MIN_SUBREGION_RIDES, "sub_regions": sub_regions},
         "hourly": {"buckets": hourly},
@@ -488,7 +599,12 @@ def analyze_scenarios(
             acc["failed"] += 1
             if base_ride is None:
                 base_ride = _scenario_ride(row)
-                classification = classify_ride(base_ride, row.get("comment_text"))
+                classification = classify_ride(
+                    base_ride,
+                    row.get("comment_text"),
+                    field_category=_enum_or_none(FailureCategory, row.get("field_category")),
+                    field_reason=_enum_or_none(FailureReason, row.get("field_reason")),
+                )
             category = classification.category.value if classification.category else "SINYALSIZ"
             acc["categories"][category] += 1
             vehicle_key = (int(row.get("vehicle_id") or 0), row.get("external_code"))
@@ -502,9 +618,15 @@ def analyze_scenarios(
                 _next_ride(row, scenario),
                 comment_text=row.get("comment_text"),
                 rating=row.get("rating"),
+                field_fault=row.get("field_signal_reason_id") is not None,
             )
             _update_control(acc, assessment)
             _update_false_fault(acc, assessment, int(row.get("vehicle_id") or 0))
+            _update_regulation_matrix(acc, category, assessment.verdict)
+            if category == FailureCategory.TEKNIK.value:
+                _update_technical_detail(
+                    acc, classification, assessment, row.get("field_signal_desc")
+                )
             if sub_key is not None and assessment.verdict is FaultVerdict.SAHTE_ALARM_SUPHESI:
                 acc["subregions"][sub_key]["false_alarm"] += 1
 
