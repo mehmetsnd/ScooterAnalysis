@@ -43,14 +43,30 @@ def resolve_scope(engine: Engine, scope: Scope) -> AnalysisScope:
 
 
 def analysis_timeline(
-    engine: Engine, scope: Optional[AnalysisScope]
+    engine: Engine,
+    scope: Optional[AnalysisScope],
+    candidate_bounds: Optional[tuple[float, float]] = None,
 ) -> Iterable[dict]:
     """İki senaryolu analiz için araç/zaman sıralı, stream edilen timeline.
 
     LEAD alanları seçili kapsamın içindeki aynı aracın sonraki sürüşünü gösterir.
     Sonuç generator olduğu için yüz binlerce satır bellekte biriktirilmez.
+
+    `candidate_bounds` = (azami süre sn, azami mesafe m) — verilirse sinyal-join
+    yalnız BAŞARISIZ OLABİLECEK sürüşler için çalışır (bkz.
+    `engine.field_signal_join_sql`). Değeri `scenario_analysis.candidate_bounds()`
+    üretir; senaryo eşiklerinin maksimumu olduğu için başarısız kümesinin üstkümesidir.
+
+    VERİLMEZSE guard uygulanmaz — yavaş ama DAİMA doğru. Yani bu parametreyi unutmak
+    yanlış sayı değil, yalnız yavaşlık üretir (güvenli varsayılan).
     """
     clause, params = _scope_clause(scope)
+    if candidate_bounds is not None:
+        params = {
+            **params,
+            "fsig_max_dur": float(candidate_bounds[0]),
+            "fsig_max_dist": float(candidate_bounds[1]),
+        }
     sql = text(
         f"""
         WITH scoped AS (
@@ -77,7 +93,7 @@ def analysis_timeline(
             LEFT JOIN sub_region sr ON sr.sub_region_id = r.sub_region_id
             LEFT JOIN feedback f
                    ON f.ride_id = r.ride_id AND f.ride_start_time = r.start_time
-            {field_signal_join_sql()}
+            {field_signal_join_sql(candidate_guard=candidate_bounds is not None)}
             WHERE ci.is_test = false
               AND r.outcome IN ('BASARILI', 'BASARISIZ_HARD')
               AND NOT ('OUT_OF_CONTENT' = ANY(r.data_quality_flags))

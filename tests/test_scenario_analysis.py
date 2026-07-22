@@ -7,6 +7,7 @@ from binbin.core.scenario_analysis import (
     ScenarioStatus,
     analyze_scenarios,
     build_scenarios,
+    candidate_bounds,
 )
 from binbin.cli.main import (
     _print_regulation_matrix,
@@ -199,6 +200,28 @@ def test_technical_detail_total_matches_category_count():
     assert sum(r["rides"] for r in detail["rows"]) == categories["TEKNIK"]
     assert detail["total"] == categories["TEKNIK"]
     assert len(detail["rows"]) == 2  # iki farklı kural-kitabı etiketi
+
+
+def test_candidate_bounds_is_superset_of_every_scenario_threshold():
+    """Aday sınırı, başarısız kümesinin ÜSTKÜMESİ olmalı.
+
+    Sinyal-join bu sınırın dışındaki sürüşlerde hiç çalışmaz; sınır bir senaryonun
+    eşiğinden küçük olsaydı o senaryoda başarısız sayılan sürüşler SESSİZCE sinyalsiz
+    kalırdı (yanlış sayı). Sınır sabit yazılmaz, senaryolardan türetilir.
+    """
+    scenarios = build_scenarios((200.0, 150.0))
+    max_dur, max_dist = candidate_bounds(scenarios)
+    for s in scenarios:
+        assert s.duration_threshold <= max_dur
+        assert s.distance_threshold <= max_dist
+
+
+def test_candidate_bounds_single_scenario():
+    (only,) = build_scenarios(None)
+    assert candidate_bounds(build_scenarios(None)) == (
+        only.duration_threshold,
+        only.distance_threshold,
+    )
 
 
 def test_signal_audit_printer_marks_weak_and_dead_codes(capsys):

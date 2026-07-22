@@ -100,6 +100,25 @@ def build_scenarios(
     return tuple(scenarios)
 
 
+def candidate_bounds(scenarios: tuple[FailureScenario, ...]) -> tuple[float, float]:
+    """Sinyal-join'in çalışması GEREKEN sürüşleri sınırlayan (süre, mesafe) üst sınırı.
+
+    NEDEN: sinyal alanları yalnız BAŞARISIZ sürüşlerde okunur (`analyze_scenarios`
+    içinde `acc["failed"]` bloğu). Başarısız kümesi tüm sürüşlerin ~%6'sı olduğu için
+    sinyali 1M satırın hepsi için hesaplamak boşa iştir — repository katmanı bu sınırı
+    kullanıp LATERAL'i aday olmayan satırlarda hiç çalıştırmaz.
+
+    ÜSTKÜME GARANTİSİ: bir sürüş herhangi bir senaryoda başarısızsa ya kaynak-başarısızdır
+    (guard'ın ilk dalı) ya da o senaryonun eşiklerinin ALTINDADIR; eşiklerin MAKSİMUMUNU
+    almak bu kümeyi kapsar. Eşikler senaryolardan türetilir, sabit yazılmaz — yeni bir
+    senaryo eklenirse sınır kendiliğinden genişler.
+    """
+    return (
+        max(s.duration_threshold for s in scenarios),
+        max(s.distance_threshold for s in scenarios),
+    )
+
+
 def _pct(part: int, whole: int) -> float:
     return round(100.0 * part / whole, 1) if whole else 0.0
 

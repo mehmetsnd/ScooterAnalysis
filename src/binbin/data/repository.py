@@ -53,8 +53,16 @@ class RideQueryRepository(Protocol):
         """Ülke/şehir adlarını id listelerine çözer (is_test şehirler hariç)."""
         raise NotImplementedError
 
-    def analysis_timeline(self, scope: AnalysisScope) -> Iterable[dict]:
-        """İki senaryolu analiz için araç/zaman sıralı sürüş timeline'ı."""
+    def analysis_timeline(
+        self,
+        scope: AnalysisScope,
+        candidate_bounds: Optional[tuple[float, float]] = None,
+    ) -> Iterable[dict]:
+        """İki senaryolu analiz için araç/zaman sıralı sürüş timeline'ı.
+
+        `candidate_bounds` verilirse sinyal-join yalnız başarısız olabilecek
+        sürüşlerde çalışır (performans). Verilmezse yavaş ama daima doğru.
+        """
         raise NotImplementedError
 
     def ops_cost_rows(self, scope: AnalysisScope) -> list[dict]:

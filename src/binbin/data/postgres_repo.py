@@ -33,8 +33,12 @@ class PostgresRideRepository:
     def resolve_scope(self, scope: Scope) -> AnalysisScope:
         return queries.resolve_scope(self.engine, scope)
 
-    def analysis_timeline(self, scope: Optional[AnalysisScope]) -> Iterable[dict]:
-        return queries.analysis_timeline(self.engine, scope)
+    def analysis_timeline(
+        self,
+        scope: Optional[AnalysisScope],
+        candidate_bounds: Optional[tuple[float, float]] = None,
+    ) -> Iterable[dict]:
+        return queries.analysis_timeline(self.engine, scope, candidate_bounds)
 
     # ------------------------------------------------------- analysis (okuma)
     def ops_cost_rows(self, scope: Optional[AnalysisScope]) -> list[dict]:

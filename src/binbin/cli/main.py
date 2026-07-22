@@ -300,8 +300,14 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     # sınıflandırma + classify/assess mantığını SQL'de tekrarlamamak için. Bellek
     # O(satır) değil O(farklı varlık); mevcut aylık ölçekte uygundur. Çok büyük
     # ölçekte (10M+ satır) sık başlıklar için SQL-tarafı agregasyon yeniden değerlendirilmeli.
+    # Sinyal-join yalnız başarısız OLABİLECEK sürüşlerde çalışsın: sınırı senaryoların
+    # kendi eşiklerinden türetiyoruz, sabit yazmıyoruz (yeni senaryo eklenirse sınır
+    # kendiliğinden genişler). Ölçüm: timeline 37,2 sn → aday guard'ıyla belirgin düşüş.
+    bounds = scenario_analysis.candidate_bounds(
+        scenario_analysis.build_scenarios(custom_thr)
+    )
     report = scenario_analysis.analyze_scenarios(
-        repo.analysis_timeline(ascope),
+        repo.analysis_timeline(ascope, candidate_bounds=bounds),
         custom=custom_thr,
         cost_rows=repo.ops_cost_rows(ascope),
         ooc_counts=repo.out_of_content_counts(ascope),
