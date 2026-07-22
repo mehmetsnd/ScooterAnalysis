@@ -478,7 +478,10 @@ def _print_scenario_causes(report: dict) -> None:
             )
     print(
         "\nNot: 'Bildirimsiz' = kimse arıza bildirmedi; bu sürüşler için açıklanacak bir "
-        "arıza iddiası yoktur.\nYüzdeler her senaryonun kendi başarısız toplamına göredir."
+        "arıza iddiası yoktur."
+        "\nTablodaki 'Bildirimli' yüzdesi İLGİLİ KATEGORİNİN kendi toplamına göredir "
+        "(satırlar arası toplanamaz).\nAlttaki özet satır ise senaryonun TÜM başarısız "
+        "sayısına göredir."
     )
 
 

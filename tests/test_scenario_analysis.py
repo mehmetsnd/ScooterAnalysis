@@ -266,6 +266,10 @@ def test_cli_uses_readable_scenario_names(capsys):
     # P4: yanıltıcı tek "sinyalsiz %" yerine bildirimli/bildirimsiz ayrımı basılmalı.
     assert "Bildirimli" in output and "Bildirimsiz" in output
     assert "Bildirim VAR ama kategori atanamayan" in output
+    # Tablodaki yüzde KATEGORİ paydalı, özet satır TÜM başarısız paydalı — dipnot
+    # bunu ayırmalı, yoksa sunumda iki farklı payda aynı sanılır.
+    assert "İLGİLİ KATEGORİNİN kendi toplamına göredir" in output
+    assert "TÜM başarısız" in output
     assert "Mevcut Kural" in output
     assert "Özel Kural" in output
     assert "Kaynak + Özel Eşik" not in output

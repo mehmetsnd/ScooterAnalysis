@@ -7,7 +7,7 @@ fonksiyonlara delege eder:
   * sınıflandırma (yaz)  → `classify.py`
   * değerlendirme (yaz)  → `assess.py`
   * bağlantı/plumbing    → `engine.py`
-  * tablo tanımları      → `schema.py`
+(Tablo tanımları Python'da TUTULMAZ; şemanın tek doğru kaynağı `db/*.sql`.)
 
 Böylece "hangi dosyada hangi fonksiyon" nettir ve tek dosya şişmez. Canlı analiz
 yolu `analysis_timeline` (stream) + `ops_cost_rows`; yazma yolu classify_all/assess_all.

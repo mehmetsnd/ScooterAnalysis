@@ -56,6 +56,20 @@ def test_vehicle_status_seed_marks_low_battery_as_non_signal():
     assert "'TEKNIK'" not in low_battery_line
 
 
+def test_classify_excludes_out_of_content_like_analysis_timeline():
+    """Kalıcı sınıflandırma ile canlı analiz AYNI kümeyi görmeli.
+
+    OUT_OF_CONTENT sürüşler `analysis_timeline`'da dışlanır; `classify_all` de
+    dışlamazsa iki çıktı farklı "kaç başarısız sürüş" sayısı basar (gerçek DB'de
+    52.755 vs 52.754 farkı bu yüzden oluşmuştu).
+    """
+    source = (ROOT / "src" / "binbin" / "data" / "classify.py").read_text(encoding="utf-8")
+    timeline = (ROOT / "src" / "binbin" / "data" / "queries.py").read_text(encoding="utf-8")
+    guard = "NOT ('OUT_OF_CONTENT' = ANY(r.data_quality_flags))"
+    assert guard in source
+    assert guard in timeline
+
+
 def test_mongo_distance_is_the_only_ingest_distance_source():
     source = (ROOT / "src" / "binbin" / "data" / "ingest.py").read_text(encoding="utf-8")
     assert "NULLIF(s.mongo_distance_meters, '')::numeric AS dist_raw" in source

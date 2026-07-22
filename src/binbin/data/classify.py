@@ -22,6 +22,12 @@ def _reset_classification(engine: Engine, clause: str, sparams: dict) -> int:
     `classification_source` NOT NULL'dur ve `ck_category_needs_source` kısıtı "kategori
     doluysa kaynak NONE olamaz" der; kategoriyle birlikte kaynağı 'NONE'a çekmek bu
     kısıtı sağlar. Etkilenen satır sayısını döner.
+
+    KASITLI ASİMETRİ: reset OUT_OF_CONTENT sürüşleri de KAPSAR, ama aşağıdaki SELECT
+    onları dışlar. Böylece eski sürümde yanlışlıkla sınıflandırılmış OOC satırları
+    temizlenir ve bir daha kategori almazlar — kalıcı tablo `analysis_timeline`'ın
+    gördüğü kümeye yakınsar. Guard (`classified_at IS NOT NULL OR ...`) sayesinde
+    tekrar çalıştırmak no-op'tur.
     """
     with engine.begin() as conn:
         result = conn.execute(
@@ -85,7 +91,12 @@ def classify_all(
         WHERE r.outcome = 'BASARISIZ_HARD'
           AND r.failure_category IS NULL
           AND r.classified_at IS NULL
-          AND ci.is_test = false {clause}
+          AND ci.is_test = false
+          -- OUT_OF_CONTENT `analysis_timeline` tarafından DIŞLANIR (mesafe>20km veya
+          -- süre≥6sa; ayrı kovada raporlanır). Burada da dışlanmazsa kalıcı
+          -- ride.failure_category, canlı analizin hiç görmediği sürüşlere kategori
+          -- atar ve iki çıktı farklı "kaç sürüş" sayısı basar.
+          AND NOT ('OUT_OF_CONTENT' = ANY(r.data_quality_flags)) {clause}
         ORDER BY r.start_time
         LIMIT :batch
         """
