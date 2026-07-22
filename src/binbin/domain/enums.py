@@ -95,8 +95,14 @@ class ClassificationSource(str, Enum):
     """Sınıflandırma kanıtının kaynağı (DB: classification_source).
 
     ck_category_needs_source: failure_category NULL DEĞİLSE source NONE olamaz.
-    REASON_CODE ileriye dönüktür — reason_id anlamları (end_reason.category_hint)
-    doğrulanana kadar classifier bu kaynağı üretmez.
+
+    FIELD_SIGNAL : sürüş kaydındaki telemetri alanları (unlock_ack, connection_lost,
+                   motor_error_code…). Mevcut sürüş CSV'sinde hepsi NULL — kod hazır
+                   ama fiilen üretilmiyor.
+    REASON_CODE  : araç durum-değişim defterinden (fleet_status_event) gelen, kural
+                   kitabında (fleet_status_reason) AÇIK teknik arıza olarak işaretlenmiş
+                   sinyal. Haziran 2026 defteri yüklendiğinden beri classifier bu kaynağı
+                   ÜRETİR (bkz. core/classifier.py adım 6).
     """
 
     FIELD_SIGNAL = "FIELD_SIGNAL"

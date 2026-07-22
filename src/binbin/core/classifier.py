@@ -9,16 +9,25 @@ Eşleşme Önceliği (İlk uyan kazanır):
   4. unlock_ack == False              -> TEKNIK      (FIELD_SIGNAL)
   5. connection_lost / motor / bms /
      düşük batarya                    -> TEKNIK      (FIELD_SIGNAL)
-  6. end_message text -> keywords     -> (TEXT_MESSAGE)
-  7. comment_text -> keywords         -> (TEXT_COMMENT)
-  8. Hiçbiri eşleşmezse               -> None (Sinyalsiz)
+  6. araç durum-değişim defterinden
+     teknik arıza sinyali (field_*)   -> field_category (REASON_CODE)
+  7. end_message text -> keywords     -> (TEXT_MESSAGE)
+  8. comment_text -> keywords         -> (TEXT_COMMENT)
+  9. Hiçbiri eşleşmezse               -> None (Sinyalsiz)
 
-Not 1: Adım 1-5'teki telemetri dataları elimizdeki mevcut CSV'de yok (NULL). 
-Ama kod ileriye dönük (future-proof) ve Null-safe yazıldı. Şu an sistem fiilen
-6. ve 7. adımlardaki Text/NLP parsing üzerinden yürüyor.
+Not 1: Adım 1-5'teki telemetri dataları elimizdeki mevcut CSV'de yok (NULL).
+Ama kod ileriye dönük (future-proof) ve Null-safe yazıldı.
 
-Not 2 (ALTIN KURAL): Sinyalsiz sürüşlere ASLA kategori uydurmuyoruz. Başarısızların 
-%89'u zaten bu kütlede. Bu kütleyi `false_fault.py`'da davranışsal analizle (hypothesis) çözeceğiz.
+Not 2: Adım 6, araç durum-değişim defterinden (fleet_status_event +
+fleet_status_reason kural kitabı) gelen açık teknik arıza sinyalidir — repository
+katmanı (`data/queries.py`/`data/classify.py`) sürüşün zaman penceresindeki en
+öncelikli sinyali `field_category`/`field_reason` olarak besler. Belirsiz/davranışsal
+kodlar (ör. "BinBin açık" spontane) kural kitabında NULL bırakıldığı için buraya hiç
+ulaşmaz — ŞÜPHELİ≠SAHTE disiplini SQL tarafında zaten uygulanmıştır.
+
+Not 3 (ALTIN KURAL): Sinyalsiz sürüşlere ASLA kategori uydurmuyoruz. Adım 6 devreye
+girmeden önce başarısızların ~%91,5'i bu kütledeydi. Kalanı `false_fault.py`'da
+davranışsal analizle (hypothesis) çözülür.
 """
 
 from typing import NamedTuple, Optional
@@ -91,8 +100,17 @@ def _technical_reason(text: str) -> FailureReason:
 def classify_ride(
     ride: Ride,
     comment_text: Optional[str] = None,
+    field_category: Optional[FailureCategory] = None,
+    field_reason: Optional[FailureReason] = None,
 ) -> ClassificationResult:
-    """Tek bir sürüş objesini alır, sinyallerini tarar ve kategorize eder."""
+    """Tek bir sürüş objesini alır, sinyallerini tarar ve kategorize eder.
+
+    `field_category`/`field_reason`: araç durum-değişim defterinden (repository
+    katmanının sinyal-join'i, bkz. `data/engine.py:field_signal_join_sql`) gelen,
+    sürüşün zaman penceresindeki en öncelikli AÇIK teknik arıza sinyali. Kural
+    kitabında (fleet_status_reason) belirsiz sayılan kodlar zaten NULL geldiği
+    için bu parametre kategori UYDURMAZ — yalnız DB'de doğrulanmış eşlemeyi taşır.
+    """
     if ride.outcome is not RideOutcome.BASARISIZ_HARD:
         return _NONE_RESULT
 
@@ -127,17 +145,23 @@ def classify_ride(
     if ride.start_battery_pct is not None and ride.start_battery_pct <= LOW_BATTERY_PCT:
         return ClassificationResult(FailureCategory.TEKNIK, FailureReason.LOW_BATTERY, src)
 
-    # 6. Sürüş sonlandırma mesajı
+    # 6. Araç durum-değişim defterinden teknik arıza sinyali (kural kitabı DB'de).
+    if field_category is not None:
+        return ClassificationResult(
+            field_category, field_reason, ClassificationSource.REASON_CODE
+        )
+
+    # 7. Sürüş sonlandırma mesajı
     if ride.end_message:
         result = _classify_text(ride.end_message, ClassificationSource.TEXT_MESSAGE)
         if result is not None:
             return result
 
-    # 7. Kullanıcı yorumu
+    # 8. Kullanıcı yorumu
     if comment_text:
         result = _classify_text(comment_text, ClassificationSource.TEXT_COMMENT)
         if result is not None:
             return result
 
-    # 8. Sinyalsiz → kategori UYDURMA
+    # 9. Sinyalsiz → kategori UYDURMA
     return _NONE_RESULT

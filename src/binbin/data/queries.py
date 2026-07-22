@@ -12,8 +12,8 @@ from typing import Iterable, Optional
 
 from sqlalchemy import Engine, text
 
-from binbin.config import Scope
-from binbin.data.engine import _as_dicts, _scope_clause
+from binbin.config import FIELD_SIGNAL_WINDOW_POST_MIN, Scope
+from binbin.data.engine import _as_dicts, _scope_clause, field_signal_join_sql
 from binbin.data.repository import AnalysisScope
 
 
@@ -67,7 +67,9 @@ def analysis_timeline(
                 r.motor_error_code, r.bms_error_code, r.user_cancelled,
                 r.payment_status::text AS payment_status,
                 r.data_quality_flags,
-                f.rating, f.comment_text
+                f.rating, f.comment_text,
+                fsig.field_signal_reason_id, fsig.field_category::text AS field_category,
+                fsig.field_reason::text AS field_reason, fsig.field_signal_desc
             FROM ride r
             JOIN city ci ON ci.city_id = r.city_id
             JOIN country co ON co.country_id = ci.country_id
@@ -75,6 +77,7 @@ def analysis_timeline(
             LEFT JOIN sub_region sr ON sr.sub_region_id = r.sub_region_id
             LEFT JOIN feedback f
                    ON f.ride_id = r.ride_id AND f.ride_start_time = r.start_time
+            {field_signal_join_sql()}
             WHERE ci.is_test = false
               AND r.outcome IN ('BASARILI', 'BASARISIZ_HARD')
               AND NOT ('OUT_OF_CONTENT' = ANY(r.data_quality_flags))
@@ -142,6 +145,77 @@ def ops_cost_rows(engine: Engine, scope: Optional[AnalysisScope]) -> list[dict]:
                 "SELECT mission_type, labor_cost, fuel_cost, currency "
                 "FROM ops_cost_model"
             )
+        )
+        return _as_dicts(result)
+
+
+def signal_discrimination_rows(
+    engine: Engine, scope: Optional[AnalysisScope]
+) -> list[dict]:
+    """Kural kitabındaki HER kod için: başarısız/başarılı sürüş penceresinde kaç kez düştü.
+
+    `field_signal_join_sql` yalnız `is_fault_signal=true` kodları seçer; bu sorgu
+    KASITLI olarak 58 kodun TAMAMINI tarar — bir kodun sinyal yapılıp yapılmayacağına
+    karar verebilmek için ADAY kodların da ölçülmesi gerekir (governance).
+
+    Pencere, üretimdeki sinyal-join ile AYNI sözleşmeyi kullanır (sonraki sürüşte
+    kesilir) — yoksa denetim raporu, denetlediği mekanizmadan farklı bir şey ölçer.
+    `next_start` LEAD'i TÜM sürüşler üzerinden alınır (out-of-content dahil), çünkü
+    analizden dışlanan bir sürüş de aracı fiilen meşgul eder.
+
+    Sürüş başına kod başına TEK sayım (DISTINCT) — aynı kod pencerede 5 kez düşse de
+    bu 1 sürüştür; oranların paydası sürüş sayısıdır.
+    """
+    clause, params = _scope_clause(scope)
+    sql = text(
+        f"""
+        WITH win AS (
+            SELECT r.ride_id, r.start_time, r.vehicle_id, r.city_id, r.outcome,
+                   r.data_quality_flags,
+                   COALESCE(r.end_time, r.start_time) AS end_time,
+                   LEAD(r.start_time) OVER (
+                       PARTITION BY r.vehicle_id ORDER BY r.start_time) AS next_start
+            FROM ride r
+        ),
+        scoped AS (
+            SELECT w.* FROM win w
+            JOIN city ci ON ci.city_id = w.city_id
+            WHERE ci.is_test = false
+              AND w.outcome IN ('BASARILI', 'BASARISIZ_HARD')
+              AND NOT ('OUT_OF_CONTENT' = ANY(w.data_quality_flags))
+              {clause}
+        ),
+        base AS (
+            SELECT count(*) FILTER (WHERE outcome = 'BASARISIZ_HARD') AS n_fail,
+                   count(*) FILTER (WHERE outcome = 'BASARILI')       AS n_ok
+            FROM scoped
+        ),
+        hits AS (
+            SELECT DISTINCT s.ride_id, s.outcome, e.status_reason_id AS reason_id
+            FROM scoped s
+            JOIN fleet_status_event e
+              ON e.vehicle_id = s.vehicle_id
+             AND e.created_on >= s.start_time
+             AND e.created_on < LEAST(
+                     s.end_time + make_interval(mins => :win_min),
+                     COALESCE(s.next_start, 'infinity'::timestamptz))
+            WHERE e.status_reason_id IS NOT NULL
+        )
+        SELECT fsr.reason_id, fsr.description, fsr.is_fault_signal, fsr.verified,
+               count(h.ride_id) FILTER (WHERE h.outcome = 'BASARISIZ_HARD') AS fail_rides,
+               count(h.ride_id) FILTER (WHERE h.outcome = 'BASARILI')       AS ok_rides,
+               b.n_fail, b.n_ok
+        FROM fleet_status_reason fsr
+        LEFT JOIN hits h ON h.reason_id = fsr.reason_id
+        CROSS JOIN base b
+        GROUP BY fsr.reason_id, fsr.description, fsr.is_fault_signal, fsr.verified,
+                 b.n_fail, b.n_ok
+        ORDER BY fail_rides DESC
+        """
+    )
+    with engine.connect() as conn:
+        result = conn.execute(
+            sql, {**params, "win_min": FIELD_SIGNAL_WINDOW_POST_MIN}
         )
         return _as_dicts(result)
 

@@ -11,7 +11,7 @@ from sqlalchemy import Engine, text
 
 from binbin.config import ASSESSOR_VERSION
 from binbin.core.false_fault import assess_ride
-from binbin.data.engine import _scope_clause
+from binbin.data.engine import _scope_clause, field_signal_join_sql
 from binbin.data.repository import AnalysisScope
 from binbin.domain.enums import RideOutcome
 from binbin.domain.models import Ride
@@ -49,11 +49,13 @@ def assess_all(
         WITH scoped AS (
             SELECT r.ride_id, r.start_time, r.end_time, r.vehicle_id, r.outcome,
                    r.distance_m, r.end_reason_id, r.end_message,
-                   f.rating, f.comment_text
+                   f.rating, f.comment_text,
+                   (fsig.field_signal_reason_id IS NOT NULL) AS field_fault
             FROM ride r
             JOIN city ci ON ci.city_id = r.city_id
             LEFT JOIN feedback f
                    ON f.ride_id = r.ride_id AND f.ride_start_time = r.start_time
+            {field_signal_join_sql()}
             WHERE ci.is_test = false {clause}
         ),
         seq AS (
@@ -138,6 +140,7 @@ def assess_all(
                 next_ride,
                 comment_text=row["comment_text"],
                 rating=row["rating"],
+                field_fault=row["field_fault"],
             )
             payload.append(
                 {

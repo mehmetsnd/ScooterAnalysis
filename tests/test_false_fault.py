@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta
 
 from binbin.core.false_fault import assess_ride
-from binbin.domain.enums import FalseFaultHypothesis, FaultVerdict, RideOutcome
+from binbin.domain.enums import ClassificationSource, FalseFaultHypothesis, FaultVerdict, RideOutcome
 from binbin.domain.models import Ride
 
 _T0 = datetime(2026, 6, 1, 12, 0)
@@ -101,3 +101,21 @@ def test_sahte_alarm_uc_bosa_gorev():
     a = assess_ride(_ride(distance_m=0.0), _next(ok=True, distance_m=800.0),
                     comment_text="araç çalışmıyor")
     assert a.wasted_missions == 3
+
+
+# --- field_fault (araç durum-değişim defteri arıza sinyali) -----------------
+def test_field_fault_tek_basina_bildirim_sayilir():
+    """Metin/puan yok ama field_fault=True → REASON_CODE kanıtı, bildirim var sayılır."""
+    a = assess_ride(_ride(), _next(ok=False), comment_text=None, rating=None, field_fault=True)
+    assert a.fault_reported is True
+    assert a.report_evidence is ClassificationSource.REASON_CODE
+    assert a.verdict is FaultVerdict.GERCEK_ARIZA_SUPHESI
+
+
+def test_field_fault_metin_kanitindan_sonra_gelir():
+    """Metin kanıtı varsa (TEXT_MESSAGE/TEXT_COMMENT) field_fault onu EZMEZ, öncelik metinde kalır."""
+    a = assess_ride(
+        _ride(), _next(ok=True, distance_m=800.0),
+        comment_text="araç çalışmıyor", field_fault=True,
+    )
+    assert a.report_evidence is ClassificationSource.TEXT_COMMENT

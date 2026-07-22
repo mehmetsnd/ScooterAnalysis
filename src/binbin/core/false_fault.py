@@ -63,12 +63,20 @@ def _report_evidence(
     ride: Ride,
     comment_text: Optional[str],
     rating: Optional[int],
+    field_fault: bool,
 ) -> ClassificationSource:
-    """Arıza bildiriminin nereden geldiğini (kanıtını) bulur. Hiçbir şey yoksa NONE döner."""
+    """Arıza bildiriminin nereden geldiğini (kanıtını) bulur. Hiçbir şey yoksa NONE döner.
+
+    `field_fault`: aracın durum-değişim defterinde, bu sürüşün penceresinde açık bir
+    teknik arıza sinyali (fleet_status_reason.is_fault_signal) var mı. Varsa müşteri
+    hiçbir şey yazmasa bile bu, cihazın kendi bildirdiği bir arıza kanıtıdır.
+    """
     if _has_fault_text(ride.end_message):
         return ClassificationSource.TEXT_MESSAGE
     if _has_fault_text(comment_text):
         return ClassificationSource.TEXT_COMMENT
+    if field_fault:
+        return ClassificationSource.REASON_CODE
     if ride.end_reason_id is not None:
         return ClassificationSource.REASON_CODE
     if rating == 1:
@@ -87,18 +95,21 @@ def assess_ride(
     next_ride: Optional[Ride],
     comment_text: Optional[str] = None,
     rating: Optional[int] = None,
+    field_fault: bool = False,
     healthy_min_distance_m: float = 200.0,
     healthy_max_gap_min: float = 360.0,
 ) -> FaultAssessment:
     """Arızalı denilen bir sürüşün sahte mi yoksa gerçek mi olduğunu hesaplar.
-    
-    Bunu anlamak için AYNI aracın bir sonraki sürüşüne (`next_ride`) bakarız. 
-    Eğer araç kısa süre içinde başka biri tarafından kiralanıp uzun mesafe 
+
+    Bunu anlamak için AYNI aracın bir sonraki sürüşüne (`next_ride`) bakarız.
+    Eğer araç kısa süre içinde başka biri tarafından kiralanıp uzun mesafe
     gidebilmişse, önceki kullanıcının arıza bildirimi sahtedir (healthy_proof = True).
-    
+
     Ayrıca `rating` (yıldız) = 1 ise bunu potansiyel arıza şikayeti sayarız.
+    `field_fault`: araç durum-değişim defterinde bu sürüşün penceresinde açık bir
+    teknik arıza sinyali varsa True (bkz. `_report_evidence`).
     """
-    report_evidence = _report_evidence(ride, comment_text, rating)
+    report_evidence = _report_evidence(ride, comment_text, rating, field_fault)
     fault_reported = report_evidence is not ClassificationSource.NONE
 
     vehicle_moved: Optional[bool]

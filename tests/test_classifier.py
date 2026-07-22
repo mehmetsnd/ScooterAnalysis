@@ -104,3 +104,44 @@ def test_para_iadesi_teknik_odeme_degil():
 def test_alan_disi_regulasyon():
     result = classify_ride(_ride(end_message="alan dışı, sürüş sonlandırıldı"))
     assert result.category is FailureCategory.REGULASYON
+
+
+# --- field_category/field_reason (araç durum-değişim defteri sinyali) -------
+def test_field_signal_resolves_previously_signalless():
+    """Sinyalsiz kalacak bir sürüş, durum-defteri sinyaliyle kategori kazanır (REASON_CODE)."""
+    result = classify_ride(
+        _ride(),
+        field_category=FailureCategory.TEKNIK,
+        field_reason=FailureReason.CONNECTION_LOST,
+    )
+    assert result.category is FailureCategory.TEKNIK
+    assert result.reason is FailureReason.CONNECTION_LOST
+    assert result.source is ClassificationSource.REASON_CODE
+
+
+def test_field_signal_none_kalir_sinyalsiz():
+    """field_category verilmezse davranış değişmez (geriye dönük uyum)."""
+    result = classify_ride(_ride())
+    assert result == (None, None, ClassificationSource.NONE)
+
+
+def test_field_signal_telemetriden_sonra_gelir():
+    """Telemetri (adım 1-5) her zaman field_signal'dan (adım 6) önceliklidir."""
+    result = classify_ride(
+        _ride(unlock_ack=False),
+        field_category=FailureCategory.TEKNIK,
+        field_reason=FailureReason.CONNECTION_LOST,
+    )
+    assert result.reason is FailureReason.UNLOCK_ACK_TIMEOUT
+    assert result.source is ClassificationSource.FIELD_SIGNAL
+
+
+def test_field_signal_metinden_once_gelir():
+    """field_signal (adım 6), end_message/comment metin taramasından (adım 7-8) önceliklidir."""
+    result = classify_ride(
+        _ride(end_message="kilit açılmadı"),
+        field_category=FailureCategory.TEKNIK,
+        field_reason=FailureReason.CONNECTION_LOST,
+    )
+    assert result.reason is FailureReason.CONNECTION_LOST
+    assert result.source is ClassificationSource.REASON_CODE

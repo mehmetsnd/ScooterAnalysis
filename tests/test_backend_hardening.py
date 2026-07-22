@@ -7,8 +7,18 @@ anlaşılır hata, engine tekil/cached).
 
 import pytest
 
-from binbin.data.ingest import _PARTITION_NAME_RE
-from binbin.data.engine import _CITY_ALIAS, _database_url, _scope_clause, get_engine
+from binbin.data.ingest import (
+    _FLEET_STATUS_EVENT_PARTITION_NAME_RE,
+    _PARTITION_NAME_RE,
+    ensure_month_partitions,
+)
+from binbin.data.engine import (
+    _CITY_ALIAS,
+    _database_url,
+    _scope_clause,
+    field_signal_join_sql,
+    get_engine,
+)
 from binbin.data.repository import AnalysisScope
 
 
@@ -57,6 +67,57 @@ def test_partition_name_gecerli(name):
 )
 def test_partition_name_reddedilir(name):
     assert not _PARTITION_NAME_RE.match(name)
+
+
+# --- fleet_status_event partition adı guard'ı: aynı sözleşme, farklı önek -----
+@pytest.mark.parametrize(
+    "name", ["fleet_status_event_2026_06", "fleet_status_event_2030_12"]
+)
+def test_fleet_status_event_partition_name_gecerli(name):
+    assert _FLEET_STATUS_EVENT_PARTITION_NAME_RE.match(name)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "fleet_status_event_2026_6",
+        "fleet_status_event_2026_06; DROP TABLE fleet_status_event",
+        "ride_2026_06",  # yanlış önek, çapraz kabul edilmemeli
+    ],
+)
+def test_fleet_status_event_partition_name_reddedilir(name):
+    assert not _FLEET_STATUS_EVENT_PARTITION_NAME_RE.match(name)
+
+
+# --- ensure_month_partitions: parent_table allowlist'i (bilinmeyen tablo reddedilir) --
+def test_ensure_month_partitions_bilinmeyen_parent_reddedilir():
+    with pytest.raises(ValueError, match="partition'lı tablo"):
+        ensure_month_partitions(
+            engine=None,
+            parent_table="users",
+            partition_name_re=_PARTITION_NAME_RE,
+            bounds_sql="SELECT 1",
+            bounds_params={},
+        )
+
+
+# --- Sinyal-join penceresi: sonraki sürüşte KESİLİR -------------------------
+# Regresyon kilidi: kırpma olmadan, sürüş bittikten sonra tekrar kiralanan aracın
+# YENİ sürüşü sırasında düşen arıza olayı ÖNCEKİ sürüşe de atanıyordu (ölçüm:
+# 6.423 atamanın %20,1'i). Bu, var olmayan bir kanıtı kategoriye çevirmektir.
+def test_field_signal_join_sonraki_suruste_kesilir():
+    sql = field_signal_join_sql()
+    assert "LEAST(" in sql
+    assert "r2.start_time > r.start_time" in sql
+    assert "min(r2.start_time)" in sql
+    # Üst sınır YARI AÇIK olmalı: olay tam sonraki sürüşün başlangıcındaysa ona aittir.
+    assert "e.created_on <" in sql
+    assert "BETWEEN" not in sql
+
+
+def test_field_signal_join_kural_kitabi_etiketini_tasir():
+    """TEKNİK ARIZA KIRILIMI etiketleri DB'den akar; core 58 kodu hardcode etmez."""
+    assert "fsr.description    AS field_signal_desc" in field_signal_join_sql()
 
 
 # --- Config: DATABASE_URL yoksa anlaşılır RuntimeError ----------------------

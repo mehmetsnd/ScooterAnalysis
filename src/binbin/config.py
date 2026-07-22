@@ -34,13 +34,20 @@ UNRESTRICTED_SCOPE = Scope()
 CLASSIFIER_VERSION = "v1"
 ASSESSOR_VERSION = "v1"
 
+# Sinyal-join penceresi (dk): başarısız sürüşe REASON_CODE sinyali beslerken,
+# aracın [start_time, end_time + bu kadar dk] aralığındaki arıza-sinyalli
+# fleet_status_event kayıtlarına bakılır. Sürüş ÖNCESİ olaylar KASITLI dışlanır —
+# geçmiş bir arıza bu sürüşün nedenini açıklamaz, yalnız sürüş sırasında/hemen
+# sonrasında düşen sinyal sayılır. `data/engine.py:field_signal_join_sql` kullanır.
+FIELD_SIGNAL_WINDOW_POST_MIN = 10
 
-# SQLAlchemy bağlantı havuzu ayarları (TEK yerde). CLI'da tek bağlantı yeter ama
-# web'de her istek havuzdan bağlantı alır; havuz olmadan bağlantı tükenir.
+
+# SQLAlchemy bağlantı ayarları (TEK yerde). CLI tek bağlantıyla çalışır; bu ikisi
+# yine de gerekli çünkü `analyze` uzun sürer ve bağlantı arada ölebilir:
 #   pool_pre_ping : ölü bağlantıyı kullanmadan önce ping'le (kopmuş TCP'yi ele)
 #   pool_recycle  : bu saniyeden eski bağlantıyı yenile (DB idle-timeout'a takılma)
-DB_POOL_SIZE = 5
-DB_MAX_OVERFLOW = 10
+# (Havuz boyutu ayarları web planı için konmuştu; SQLAlchemy varsayılanlarıyla
+#  birebir aynı oldukları için hiçbir şey yapmıyorlardı → kaldırıldı.)
 DB_POOL_RECYCLE_SEC = 1800
 DB_POOL_PRE_PING = True
 
