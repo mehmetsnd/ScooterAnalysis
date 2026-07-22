@@ -2,116 +2,26 @@
 
 Alan sırası DB ile birebir olmayabilir (dataclass: default'suz alanlar üstte) ama
 içerik DB tablolarıyla eşleşir. Numeric(x,2) kolonları core'da float taşınır.
+
+KAPSAM: yalnız fiilen KULLANILAN DTO'lar burada yaşar. Bir zamanlar tüm tablolar
+için (Country, City, Vehicle, Feedback, DataLoad…) dataclass envanteri tutuluyordu;
+hiçbirinin çalışma zamanında kullanıcısı yoktu ve DB şemasını ikinci kez —
+senkron kalması elle sağlanan, hiçbir testin korumadığı biçimde — anlatıyorlardı.
+Şemanın TEK doğru kaynağı `db/*.sql`'dir. Yeni bir DTO'ya gerçekten ihtiyaç
+duyulduğunda o zaman eklenir.
 """
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import datetime
 from typing import Optional
 
 from binbin.domain.enums import (
     ClassificationSource,
-    EnforcementAction,
     FailureCategory,
     FailureReason,
     PaymentStatus,
     RideOutcome,
-    RuleType,
-    VehicleStatus,
 )
-
-
-@dataclass
-class Country:
-
-    country_id: int
-    source_country_id: int
-    name: str
-    currency: str
-    timezone: str
-    iso_code: Optional[str] = None
-    active: bool = True
-
-
-@dataclass
-class City:
-    """Şehir verisi (DB: city). Doğal anahtarı (country_id, source_region_id).
-    
-    Not: region_id=8 ('Test') olan bölgeler gerçek sürüş değildir. 
-    Analiz katmanında bu verileri her zaman filtreleyip drop ediyoruz.
-    """
-
-    city_id: int
-    country_id: int
-    source_region_id: int
-    name: str
-    admin_authority: Optional[str] = None
-    is_test: bool = False
-    active: bool = True
-
-
-@dataclass
-class SubRegion:
-    """Alt bölge (DB: sub_region). Doğal anahtarı (city_id, source_sub_region_id).
-    
-    Not: source_sub_region_id kendi başına unique (benzersiz) DEĞİLDİR 
-    (örneğin 591 ID'si birden fazla bölgede geçebilir). Genelde Geofence (sınır) 
-    bölgesi için proxy olarak kullanıyoruz.
-    """
-
-    sub_region_id: int
-    city_id: int
-    source_sub_region_id: int
-    name: Optional[str] = None
-
-
-@dataclass
-class EndReason:
-    """Sürüşü sonlandırma kodu (DB: end_reason). Anlamlarını şu an tam BİLMİYORUZ.
-    
-    Saha ekibi reason_id'lerin ne anlama geldiğini doğrulayana kadar
-    label/category_hint gibi alanları NULL bırakıyoruz. Tahmin yürütmek yok.
-    """
-
-    reason_id: int
-    label: Optional[str] = None
-    category_hint: Optional[FailureCategory] = None
-    reason_hint: Optional[FailureReason] = None
-    verified: bool = False
-    first_seen_at: Optional[datetime] = None
-    notes: Optional[str] = None
-
-
-@dataclass
-class Vehicle:
-
-    vehicle_id: int
-    source_ref: str
-    external_code: Optional[str] = None
-    model: Optional[str] = None
-    firmware_version: Optional[str] = None
-    iot_box_id: Optional[str] = None
-    status: VehicleStatus = VehicleStatus.AVAILABLE
-
-
-@dataclass
-class Regulation:
-    """Şehir bazlı regülasyon kuralları (DB: regulation). Ceza tutarı para birimi lokasyona göre değişir."""
-
-    regulation_id: int
-    city_id: int
-    rule_type: RuleType
-    enforcement_action: EnforcementAction
-    active: bool
-    sub_region_id: Optional[int] = None
-    zone_name: Optional[str] = None
-    speed_limit_kmh: Optional[int] = None
-    start_hour: Optional[int] = None
-    end_hour: Optional[int] = None
-    fine_amount: Optional[float] = None
-    fine_currency: Optional[str] = None
-    effective_from: Optional[date] = None
-    effective_to: Optional[date] = None
-    source_ref: Optional[str] = None
 
 
 @dataclass
@@ -160,36 +70,3 @@ class Ride:
     data_load_id: Optional[int] = None
     ingested_at: Optional[datetime] = None
 
-
-@dataclass
-class Feedback:
-    """Kullanıcı geri bildirimi (DB: feedback). Composite FK: (ride_id, ride_start_time).
-    
-    DB kısıtlaması (Constraint): Puan veya yorumdan en az biri dolu olmak zorundadır.
-    """
-
-    feedback_id: int
-    ride_id: int
-    ride_start_time: datetime
-    rating: Optional[int] = None
-    comment_text: Optional[str] = None
-    created_at: Optional[datetime] = None
-
-
-@dataclass
-class DataLoad:
-    """ETL süreçleri için veri yükleme audit (denetim) logu (DB: data_load)."""
-
-    data_load_id: int
-    file_name: str
-    status: str = "RUNNING"
-    file_bytes: Optional[int] = None
-    period_start: Optional[date] = None
-    period_end: Optional[date] = None
-    rows_read: Optional[int] = None
-    rows_inserted: Optional[int] = None
-    rows_skipped: Optional[int] = None
-    rows_flagged: Optional[int] = None
-    started_at: Optional[datetime] = None
-    finished_at: Optional[datetime] = None
-    notes: Optional[str] = None
