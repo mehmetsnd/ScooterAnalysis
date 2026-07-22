@@ -13,10 +13,47 @@ def test_operational_reset_does_not_drop_schema_objects():
     assert "DROP " not in upper
     assert " CASCADE" not in upper
     for table in (
-        "false_fault_assessment", "feedback", "ride", "data_load", "stg_rental_raw"
+        "false_fault_assessment", "feedback", "ride", "fleet_status_event",
+        "data_load", "stg_rental_raw", "stg_status_raw",
     ):
         assert table in sql
     assert "RESTART IDENTITY" in upper
+
+
+def test_vehicle_status_schema_defines_rule_book_and_partitioning():
+    """db/06: kural kitabı DB'de yaşar (verified ile doğrulanabilir), ride ile
+    aynı partition/default-boş sözleşmesi korunur."""
+    sql = (ROOT / "db" / "06_vehicle_status.sql").read_text(encoding="utf-8")
+    for table in ("fleet_status_code", "fleet_status_reason", "fleet_status_event"):
+        assert f"CREATE TABLE {table}" in sql
+    assert "is_fault_signal" in sql
+    assert "verified" in sql
+    assert "ck_fault_signal_needs_category" in sql
+    assert "fleet_status_event_default" in sql
+    assert "PARTITION BY RANGE (created_on)" in sql
+
+
+def test_signal_rulebook_revision_drops_low_battery_and_respects_verified():
+    """db/07: ölçüm sonucu ayırt etmeyen kod (8 'Batarya az') sinyalden çıkar.
+
+    KRİTİK: revizyon `verified=true` satırlara ASLA dokunmamalı — saha ekibinin
+    doğruladığı eşleme mühendis önerisini yener (governance sözleşmesi).
+    """
+    sql = (ROOT / "db" / "07_signal_rulebook_revision.sql").read_text(encoding="utf-8")
+    assert "WHERE reason_id = 8 AND NOT verified" in sql
+    assert "is_fault_signal = false" in sql
+    # Her UPDATE verified guard'ı taşımalı; guard'sız UPDATE governance'ı bozar.
+    assert sql.count("NOT verified") >= sql.count("UPDATE fleet_status_reason")
+
+
+def test_vehicle_status_seed_marks_low_battery_as_non_signal():
+    """Temiz kurulum da (db/06) revize edilmiş kural kitabıyla başlamalı."""
+    sql = (ROOT / "db" / "06_vehicle_status.sql").read_text(encoding="utf-8")
+    low_battery_line = next(
+        line for line in sql.splitlines() if "'LowBattery'" in line
+    )
+    assert "false" in low_battery_line
+    assert "'TEKNIK'" not in low_battery_line
 
 
 def test_mongo_distance_is_the_only_ingest_distance_source():

@@ -27,8 +27,12 @@ class AnalysisScope:
 class RideCommandRepository(Protocol):
     """Veritabanına yazma/güncelleme yapan arayüz (CQRS - Command)."""
 
-    def classify_all(self, scope: Optional[AnalysisScope], batch_size: int = 10000, version: str = ...) -> dict:
-        """Sınıflandırılmamış başarısız sürüşleri sınıflandırıp geri yazar."""
+    def classify_all(self, scope: Optional[AnalysisScope], batch_size: int = 10000, version: str = ..., refresh: bool = False) -> dict:
+        """Sınıflandırılmamış başarısız sürüşleri sınıflandırıp geri yazar.
+
+        refresh=True: damgalar önce temizlenir, kapsamdaki tüm başarısız sürüşler
+        yeniden sınıflandırılır (`assess_all` ile aynı sözleşme).
+        """
         raise NotImplementedError
 
     def assess_all(self, scope: Optional[AnalysisScope], version: str = ..., refresh: bool = False) -> dict:
@@ -59,4 +63,11 @@ class RideQueryRepository(Protocol):
 
     def out_of_content_counts(self, scope: AnalysisScope) -> dict:
         """Analiz dışı (out-of-content) sürüş sayıları: total + mesafe/süre kırılımı."""
+        raise NotImplementedError
+
+    def signal_discrimination_rows(self, scope: AnalysisScope) -> list[dict]:
+        """Kural kitabındaki her kodun başarısız/başarılı sürüş penceresindeki sıklığı.
+
+        `core/signal_audit.summarize_signal_discrimination` bunu lift'e çevirir.
+        """
         raise NotImplementedError

@@ -4,8 +4,15 @@
 
 param(
     [Nullable[double]]$WiDuration,
-    [Nullable[double]]$WiDistance
+    [Nullable[double]]$WiDistance,
+    [switch]$All
 )
+
+$scopeArgs = @()
+if ($All) {
+    $scopeArgs = @("--all")
+    Write-Host "Kapsam: TUM ULKELER/SEHIRLER (--all)" -ForegroundColor Yellow
+}
 
 $ErrorActionPreference = "Stop"
 
@@ -87,21 +94,26 @@ if (Test-Path ".\.venv\Scripts\python.exe") {
 $env:PYTHONPATH = "src"
 
 Write-Host "`n========== ADIM 1/4: INGEST (CSV -> PostgreSQL) ==========" -ForegroundColor Cyan
-# Not: Ayni dosya zaten yuklendiyse guard atlar (SKIPPED). Yeniden yuklemek icin: --force
-& $py -m binbin.cli ingest
+# Not: data_raw/'daki surus VE arac durum-degisim CSV'leri turlerine gore otomatik
+# ayrilip sirayla yuklenir. Ayni dosya zaten yuklendiyse guard atlar (SKIPPED).
+# Yeniden yuklemek icin: --force
+& $py -m binbin.cli ingest @scopeArgs
 if ($LASTEXITCODE -ne 0) { Write-Host "INGEST BASARISIZ!" -ForegroundColor Red; exit 1 }
 
 Write-Host "`n========== ADIM 2/4: CLASSIFY (siniflandirma) ==========" -ForegroundColor Cyan
-& $py -m binbin.cli classify
+# --refresh: kural kitabi (fleet_status_reason) veya siniflandirma mantigi degismis
+# olabilir; pipeline her kosuda kalici ride.failure_category'yi canli analizle ayni
+# tutsun diye tum basarisiz suruslar yeniden siniflandirilir.
+& $py -m binbin.cli classify --refresh @scopeArgs
 if ($LASTEXITCODE -ne 0) { Write-Host "CLASSIFY BASARISIZ!" -ForegroundColor Red; exit 1 }
 
 Write-Host "`n========== ADIM 3/4: ASSESS (sahte ariza degerlendirmesi) ==========" -ForegroundColor Cyan
-& $py -m binbin.cli assess
+& $py -m binbin.cli assess @scopeArgs
 if ($LASTEXITCODE -ne 0) { Write-Host "ASSESS BASARISIZ!" -ForegroundColor Red; exit 1 }
 
 Write-Host "`n========== ADIM 4/4: ANALYZE (analiz + grafikler) ==========" -ForegroundColor Cyan
 # Esik karsilastirmasi: Mevcut Kural (120sn/60m) ve kullanicinin girdigi Ozel Kural.
-& $py -m binbin.cli analyze --false-fault --detay --derin --charts out\ --wi-duration $wiDurationText --wi-distance $wiDistanceText
+& $py -m binbin.cli analyze --false-fault --detay --derin --charts out\ --wi-duration $wiDurationText --wi-distance $wiDistanceText @scopeArgs
 if ($LASTEXITCODE -ne 0) { Write-Host "ANALYZE BASARISIZ!" -ForegroundColor Red; exit 1 }
 
 Write-Host "`n========== TAMAMLANDI ==========" -ForegroundColor Green

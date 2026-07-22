@@ -43,14 +43,18 @@ class PostgresRideRepository:
     def out_of_content_counts(self, scope: Optional[AnalysisScope]) -> dict:
         return queries.out_of_content_counts(self.engine, scope)
 
+    def signal_discrimination_rows(self, scope: Optional[AnalysisScope]) -> list[dict]:
+        return queries.signal_discrimination_rows(self.engine, scope)
+
     # ---------------------------------------------------------- classify (yaz)
     def classify_all(
         self,
         scope: Optional[AnalysisScope],
         batch_size: int = 10000,
         version: str = CLASSIFIER_VERSION,
+        refresh: bool = False,
     ) -> dict:
-        return classify.classify_all(self.engine, scope, batch_size, version)
+        return classify.classify_all(self.engine, scope, batch_size, version, refresh)
 
     # ------------------------------------------------------------ assess (yaz)
     def assess_all(
