@@ -1,10 +1,7 @@
-fastapi==0.139.0
-uvicorn[standard]==0.50.2
+# CLI/terminal projesi — web bağımlılığı YOKTUR.
+# (fastapi, uvicorn, plotly web'e taşıma fikri terk edildiğinde kaldırıldı.)
 sqlalchemy==2.0.51
-psycopg[binary]==3.3.4
-alembic==1.18.5
-pandas==3.0.3
-plotly==6.8.0
-matplotlib==3.11.0
+psycopg[binary]==3.3.4   # SQLAlchemy sürücüsü: postgresql+psycopg:// — doğrudan import edilmez
+matplotlib==3.11.0       # reporting/charts.py PNG üretimi
 python-dotenv==1.2.2
 pytest==9.1.1

@@ -1,6 +1,7 @@
 """Matplotlib ile PNG grafik üretimi (imperative shell).
 
-matplotlib yalnız bu modülde kullanılır (Plotly gelirse ayrı modül). Her `chart_scenario_*`
+matplotlib yalnız bu modülde kullanılır ve projenin TEK grafik kütüphanesidir
+(web/HTML rapor fikri terk edildi; çıktı terminal + PNG'dir). Her `chart_scenario_*`
 fonksiyonu `scenario_analysis.analyze_scenarios`'un ürettiği senaryo raporu dict'ini alır,
 çizer, kaydeder ve dosya yolunu döner (tek/iki senaryoyu yan yana gösterir).
 
