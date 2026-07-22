@@ -120,6 +120,34 @@ def test_field_signal_join_kural_kitabi_etiketini_tasir():
     assert "fsr.description    AS field_signal_desc" in field_signal_join_sql()
 
 
+# --- Aday guard'ı: LATERAL'i başarısız-olabilecek sürüşlerle sınırlar -------
+# Regresyon kilidi: assess_all guard'sız 51,9 sn sürüyordu (LATERAL 1,03M satırın
+# TAMAMINDA çalışıyordu, oysa field_fault yalnız BASARISIZ_HARD satırlarında
+# okunuyordu). "outcome" guard'ı bunu 9,1 sn'ye indirdi — sonuçlar DB'de birebir
+# aynı doğrulandı (52.755 satır, byte-eşit).
+def test_field_signal_join_guardsiz_varsayilan():
+    sql = field_signal_join_sql()
+    assert "BASARISIZ_HARD" not in sql
+    assert ":fsig_max_dur" not in sql
+
+
+def test_field_signal_join_outcome_guard():
+    sql = field_signal_join_sql(candidate_guard="outcome")
+    assert "r.outcome = 'BASARISIZ_HARD' AND " in sql
+    assert ":fsig_max_dur" not in sql  # eşik bind-param'ı gerekmez
+
+
+def test_field_signal_join_thresholds_guard():
+    sql = field_signal_join_sql(candidate_guard="thresholds")
+    assert "r.outcome = 'BASARISIZ_HARD'" in sql
+    assert ":fsig_max_dur" in sql and ":fsig_max_dist" in sql
+
+
+def test_field_signal_join_bilinmeyen_guard_reddedilir():
+    with pytest.raises(ValueError, match="Bilinmeyen candidate_guard"):
+        field_signal_join_sql(candidate_guard="typo")
+
+
 # --- Config: DATABASE_URL yoksa anlaşılır RuntimeError ----------------------
 def test_database_url_eksikse_hata(monkeypatch):
     monkeypatch.setattr("binbin.data.engine.load_dotenv", lambda *a, **k: None)

@@ -55,7 +55,11 @@ def assess_all(
             JOIN city ci ON ci.city_id = r.city_id
             LEFT JOIN feedback f
                    ON f.ride_id = r.ride_id AND f.ride_start_time = r.start_time
-            {field_signal_join_sql()}
+            -- ADAY GUARD'I ("outcome"): field_fault yalnız aşağıdaki final WHERE'de
+            -- seq.outcome='BASARISIZ_HARD' satırlarında okunur (satır ~140). Bu TAM
+            -- eşleşmedir (analyze'deki gibi üstküme değil) — assess_all'da senaryo
+            -- eşiği kavramı yok. Ölçüldü: assess --refresh 51,9 sn → bkz. commit notu.
+            {field_signal_join_sql(candidate_guard="outcome")}
             WHERE ci.is_test = false {clause}
         ),
         seq AS (

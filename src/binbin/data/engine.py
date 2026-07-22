@@ -65,7 +65,7 @@ _CITY_ALIAS = "ci"
 # Sinyal-join alias'ı — sabit LİTERAL. `analysis_timeline` (queries.py), `classify_all`
 # (classify.py) ve `assess_all` (assess.py) hepsi ride'a bu alias'la (`r`) referans verir;
 # fonksiyon bu yüzden alias'ı parametrize ETMEZ (istekten gelen string asla akmaz).
-def field_signal_join_sql(candidate_guard: bool = False) -> str:
+def field_signal_join_sql(candidate_guard: Optional[str] = None) -> str:
     """`fleet_status_event`'ten sürüşe en yüksek öncelikli arıza-sinyalini bağlayan
     LEFT JOIN LATERAL parçası. `ride r` alias'ının bulunduğu bir FROM'a eklenir.
 
@@ -84,29 +84,41 @@ def field_signal_join_sql(candidate_guard: bool = False) -> str:
     olmayan bir kanıtı kategoriye çevirmek demek (ALTIN KURAL ihlali). Üst sınır artık
     yarı-açık: olay tam olarak sonraki sürüşün başlangıcında düşerse o sürüşe aittir.
 
-    ADAY GUARD'I (candidate_guard=True): sinyal alanları YALNIZ başarısız sürüşlerde
-    okunur, ama LATERAL kapsamdaki HER satır için çalışır. 1,03M sürüşün ~%6'sı
-    başarısız olduğundan bu %94 boşa iştir (ölçüldü: sinyal-join'siz sorgu 0,4 sn,
-    sinyal-join'li 37 sn). Guard, aday olmayan satırlarda LATERAL'i indeks taramasına
-    hiç girmeden kestirir — koşul yalnız `r` kolonlarına baktığı için satır başına
-    sabit maliyettir. Ölçüm: LATERAL çağrısı 1.028.402 → 121.959 (%11,9).
+    ADAY GUARD'I: sinyal alanları YALNIZ başarısız (olabilecek) sürüşlerde okunur,
+    ama LATERAL kapsamdaki HER satır için çalışır. 1,03M sürüşün ~%6'sı başarısız
+    olduğundan bu %94 boşa iştir (ölçüldü: sinyal-join'siz sorgu 0,4 sn, sinyal-join'li
+    37 sn). Guard, aday olmayan satırlarda LATERAL'i indeks taramasına hiç girmeden
+    kestirir — koşul yalnız `r` kolonlarına baktığı için satır başına sabit maliyettir.
 
-    Eşikler `:fsig_max_dur`/`:fsig_max_dist` bind-param'larıyla gelir (SQL güvenlik
-    sözleşmesi) ve çağıran tarafından `scenario_analysis.candidate_bounds()`'tan
-    türetilir — sabit yazılmaz. Guard başarısız kümesinin ÜSTKÜMESİDİR; DB'de
-    doğrulandı: hiçbir aday sürüş sinyalini kaybetmiyor.
+    candidate_guard=None      : guard yok, TÜM satırlarda çalışır (yavaş, daima doğru).
+    candidate_guard="outcome" : yalnız `r.outcome = 'BASARISIZ_HARD'`. Kullanan sorgu
+        sinyali yalnız o outcome'da okuyorsa bu TAM EŞLEŞMEdir (üstküme değil) — ör.
+        `assess.py` (field_fault yalnız seq.outcome='BASARISIZ_HARD' satırlarında
+        kullanılır). Ölçüldü: LATERAL çağrısı 1.028.402 → ~65.964 (kaynak-başarısız
+        sayısı), assess_all 51,9 sn → bkz. commit notu.
+    candidate_guard="thresholds" : `r.outcome='BASARISIZ_HARD' OR (duration<X AND
+        distance<Y)`. Eşikler `:fsig_max_dur`/`:fsig_max_dist` bind-param'larıyla gelir
+        (SQL güvenlik sözleşmesi), çağıran tarafından `scenario_analysis.
+        candidate_bounds()`'tan türetilir. Kullanan sorgu birden çok senaryo eşiğine
+        göre başarısız sayabiliyorsa (ör. `analyze`) bu ÜSTKÜMEdir, tam eşleşme değil —
+        DB'de doğrulandı: hiçbir aday sürüş sinyalini kaybetmiyor.
 
     Döndürdüğü sütunlar: field_signal_reason_id, field_category, field_reason,
     field_signal_desc (kural kitabındaki insan-okur açıklama; TEKNİK ARIZA KIRILIMI
     raporu bunu kullanır — core 58 kodu hardcode etmesin diye etiket DB'den akar).
     """
-    guard = (
-        """(r.outcome = 'BASARISIZ_HARD'
+    if candidate_guard == "outcome":
+        guard = "r.outcome = 'BASARISIZ_HARD' AND "
+    elif candidate_guard == "thresholds":
+        guard = (
+            """(r.outcome = 'BASARISIZ_HARD'
                OR (r.duration_sec < :fsig_max_dur AND r.distance_m < :fsig_max_dist))
           AND """
-        if candidate_guard
-        else ""
-    )
+        )
+    elif candidate_guard is None:
+        guard = ""
+    else:
+        raise ValueError(f"Bilinmeyen candidate_guard: {candidate_guard!r}")
     return f"""
     LEFT JOIN LATERAL (
         SELECT e.status_reason_id AS field_signal_reason_id,

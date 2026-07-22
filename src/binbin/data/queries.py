@@ -93,7 +93,9 @@ def analysis_timeline(
             LEFT JOIN sub_region sr ON sr.sub_region_id = r.sub_region_id
             LEFT JOIN feedback f
                    ON f.ride_id = r.ride_id AND f.ride_start_time = r.start_time
-            {field_signal_join_sql(candidate_guard=candidate_bounds is not None)}
+            {field_signal_join_sql(
+                candidate_guard="thresholds" if candidate_bounds is not None else None
+            )}
             WHERE ci.is_test = false
               AND r.outcome IN ('BASARILI', 'BASARISIZ_HARD')
               AND NOT ('OUT_OF_CONTENT' = ANY(r.data_quality_flags))
