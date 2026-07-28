@@ -195,3 +195,41 @@ def test_analyze_sinyal_denetimi_bayragi():
     parser = build_parser()
     assert parser.parse_args(["analyze"]).sinyal_denetimi is False
     assert parser.parse_args(["analyze", "--sinyal-denetimi"]).sinyal_denetimi is True
+
+
+def test_analyze_esik_taramasi_bayragi():
+    parser = build_parser()
+    assert parser.parse_args(["analyze"]).esik_taramasi is False
+    assert parser.parse_args(["analyze", "--esik-taramasi"]).esik_taramasi is True
+
+
+def test_analyze_esik_taramasi_widens_candidate_bounds(monkeypatch):
+    """--esik-taramasi verildiğinde sinyal-join sınırı en az ızgara üst sınırını
+    (150 sn / 80 m) kapsamalı — aksi hâlde 120-150 sn arası satırlarda field_fault
+    NULL kalır ve isabet olduğundan düşük ölçülür."""
+    from binbin.core import threshold_scan
+    from binbin.cli.main import cmd_analyze, build_parser
+
+    captured = {}
+
+    class FakeRepo:
+        def resolve_scope(self, scope):
+            return scope
+
+        def analysis_timeline(self, scope, candidate_bounds=None):
+            captured["bounds"] = candidate_bounds
+            return iter(())
+
+        def ops_cost_rows(self, scope):
+            return []
+
+        def out_of_content_counts(self, scope):
+            return {"total": 0, "by_distance": 0, "by_duration": 0}
+
+    monkeypatch.setattr(
+        "binbin.data.postgres_repo.PostgresRideRepository", lambda *a, **k: FakeRepo()
+    )
+    cmd_analyze(build_parser().parse_args(["analyze", "--esik-taramasi", "--all"]))
+    grid_bounds = threshold_scan.grid_bounds()
+    assert captured["bounds"][0] >= grid_bounds[0]
+    assert captured["bounds"][1] >= grid_bounds[1]

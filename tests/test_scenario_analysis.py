@@ -9,6 +9,7 @@ from binbin.core.scenario_analysis import (
     build_scenarios,
     candidate_bounds,
 )
+from binbin.core.threshold_scan import ThresholdScanAccumulator
 from binbin.cli.main import (
     _print_regulation_matrix,
     _print_scenario_causes,
@@ -332,3 +333,38 @@ def test_cli_rejects_mismatched_subregion_and_hourly_denominators():
         assert "toplam sürüş sayıları uyuşmuyor" in str(exc)
     else:
         raise AssertionError("Uyumsuz saatlik toplam reddedilmeliydi.")
+
+
+def test_scan_observer_is_fed_once_per_row_and_does_not_change_report():
+    """`scan=` opsiyonel gözlemcisi timeline'ı ikinci kez tüketmeden (tek geçiş)
+    her satırı bir kez görmeli; report çıktısını DEĞİŞTİRMEMELİ (varsayılan None ile
+    geriye dönük uyum)."""
+    rows = [
+        _row(1, "BASARISIZ_HARD", 200, 100),
+        _row(2, "BASARILI", 110, 55),
+        _row(3, "BASARILI", 80, 40),
+        _row(4, "BASARISIZ_HARD", 80, 40),
+        _row(5, "BASARISIZ_HARD", 50, None),
+    ]
+    fed = []
+
+    class _SpyScan:
+        def feed(self, row):
+            fed.append(row["ride_id"])
+
+    without_scan = analyze_scenarios(list(rows), custom=(100, 45))
+    with_scan = analyze_scenarios(list(rows), custom=(100, 45), scan=_SpyScan())
+
+    assert fed == [1, 2, 3, 4, 5]
+    assert with_scan == without_scan
+
+
+def test_scan_accumulator_integrates_end_to_end_through_analyze_scenarios():
+    """Gerçek `ThresholdScanAccumulator` ile uçtan uca: analyze_scenarios timeline'ı
+    beslerken tarama da aynı akıştan doğru sonucu üretmeli."""
+    rows = [_row(1, "BASARISIZ_HARD", 50, 10)]
+    acc = ThresholdScanAccumulator()
+    analyze_scenarios(rows, scan=acc)
+    scan_report = acc.finalize()
+    assert scan_report["evaluated"] == 1
+    assert scan_report["pool_size"] == 1

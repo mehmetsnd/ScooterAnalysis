@@ -9,6 +9,8 @@ DataViz: colorblind-safe palet; büyüklük ölçen bar'larda tek hue (mavi). Ba
 alt başlık ("ne gösteriyor") Türkçe; ham dict anahtarları sunumda Türkçeleştirilir.
 """
 
+from collections import defaultdict
+from math import ceil
 from pathlib import Path
 
 import matplotlib
@@ -101,6 +103,10 @@ def _save(fig, out_dir: Path, name: str) -> Path:
 # İki senaryolu karşılaştırma grafikleri
 _SCENARIO_COLORS = [BLUE, AQUA]
 _TOP_N = 15  # sıcak nokta grafiklerinde gösterilecek azami çubuk sayısı
+# Saatlik grafikte bu kütlenin altındaki şehir-saat kovaları çizilmez (ör. İGA gibi çok
+# düşük hacimli şehirler tek bir uç noktayla y-eksenini domine ediyordu — MIN_SUBREGION_RIDES
+# desenine paralel, ölçüm istikrarı için asgari kütle şartı).
+MIN_HOURLY_BUCKET_RIDES = 200
 
 
 def _scenarios(report: dict) -> list[dict]:
@@ -122,16 +128,18 @@ def chart_scenario_overview(report: dict, out_dir: Path) -> Path:
     counts = [s["overview"]["failed"] for s in scenarios]
     fig, ax = _new_fig(9, 5.4)
     bars = ax.bar(labels, rates, color=_SCENARIO_COLORS[: len(scenarios)], width=0.58)
+    # label_type="center": çubuğun tepesine basılan etiket dar aralıklarda alt başlığa değiyordu.
     ax.bar_label(
         bars,
         labels=[f"{_tr_pct(rate)}\n{_tr_int(count)} sürüş" for rate, count in zip(rates, counts)],
-        padding=5,
-        color=INK2,
+        label_type="center",
+        color="white",
         fontsize=10,
+        fontweight="bold",
     )
     ax.set_ylabel("Başarısızlık oranı (%)")
     ax.set_ylim(bottom=0)
-    ax.margins(y=0.26)
+    ax.margins(y=0.12)
     _style_axes(ax, value_axis="y")
     _header(
         fig, ax,
@@ -326,40 +334,147 @@ def chart_scenario_subregions(report: dict, out_dir: Path) -> Path:
     return _save(fig, out_dir, "scenario_subregions.png")
 
 
+_MIN_HOURLY_CITY_POINTS = 6  # bu kadar saatlik nokta kalmayan şehir paneli hiç çizilmez
+
+
 def chart_scenario_hourly(report: dict, out_dir: Path) -> Path:
+    """Küçük çoklular (small multiples): tek eksende 20+ şehir × senaryo çizgisi
+    birbirine giriyordu (bkz. teslim öncesi QA). Her şehir kendi panelinde, ortak
+    ölçekte (sharey) çizilir; tek legend figürün altında.
+    """
     scenarios = _scenarios(report)
-    cities = sorted({r["city"] for s in scenarios for r in s["hourly"]["buckets"]})
-    if not cities:
-        return _empty_chart("Saatlik Başarısızlık", "Gösterilecek saatlik veri yok",
+    buckets_by_scenario = [
+        {(r["city"], r["hour"]): r for r in s["hourly"]["buckets"]} for s in scenarios
+    ]
+    city_totals: dict[str, int] = defaultdict(int)
+    for r in scenarios[0]["hourly"]["buckets"]:
+        city_totals[r["city"]] += r["total"]
+    ordered_cities = sorted(city_totals, key=lambda c: city_totals[c], reverse=True)
+    if not ordered_cities:
+        return _empty_chart("Saatlik Başarısızlık Oranı", "Gösterilecek saatlik veri yok",
                             out_dir, "scenario_hourly.png")
-    fig, ax = _new_fig(11, 6)
-    line_styles = ["-", "--", ":"]
-    city_markers = ["o", "s", "^"]
-    for city_idx, city in enumerate(cities):
-        for scenario_idx, scenario in enumerate(scenarios):
+
+    # MIN_HOURLY_BUCKET_RIDES altındaki (düşük hacim → gürültülü oran) saat kovaları
+    # çizgiden düşürülür; kalan nokta azsa şehir paneli tamamen atlanır.
+    panels: list[tuple[str, list[list[dict]]]] = []
+    dropped: list[str] = []
+    for city in ordered_cities:
+        series_per_scenario = []
+        max_points = 0
+        for buckets in buckets_by_scenario:
             rows = sorted(
-                (r for r in scenario["hourly"]["buckets"] if r["city"] == city),
+                (r for (c, _h), r in buckets.items() if c == city and r["total"] >= MIN_HOURLY_BUCKET_RIDES),
                 key=lambda r: r["hour"],
             )
+            series_per_scenario.append(rows)
+            max_points = max(max_points, len(rows))
+        if max_points < _MIN_HOURLY_CITY_POINTS:
+            dropped.append(city)
+            continue
+        panels.append((city, series_per_scenario))
+
+    if not panels:
+        return _empty_chart(
+            "Saatlik Başarısızlık Oranı",
+            f"Hiçbir şehirde {MIN_HOURLY_BUCKET_RIDES} sürüş/saat kovası şartını karşılayan yeterli nokta yok",
+            out_dir, "scenario_hourly.png",
+        )
+
+    ncols = 4
+    nrows = ceil(len(panels) / ncols)
+    # layout="constrained" KULLANILMIYOR: fig.text ile eklenen başlık/legend'ı hesaba
+    # katmadığı için PNG'nin üstünü kırpıyordu — subplots_adjust ile elle pay ayrılır.
+    fig, axes = plt.subplots(nrows, ncols, figsize=(11, max(5.5, 2.15 * nrows)), sharex=True, sharey=True)
+    fig.subplots_adjust(top=0.85, bottom=0.10, hspace=0.55, wspace=0.22)
+    axes_flat = list(axes.flat) if len(panels) > 1 else [axes]
+    for idx, (city, series_per_scenario) in enumerate(panels):
+        ax = axes_flat[idx]
+        for scenario_idx, (scenario, rows) in enumerate(zip(scenarios, series_per_scenario)):
             if not rows:
                 continue
             ax.plot(
                 [r["hour"] for r in rows],
                 [r["failure_rate_pct"] for r in rows],
                 color=_SCENARIO_COLORS[scenario_idx],
-                linestyle=line_styles[scenario_idx],
-                marker=city_markers[city_idx % len(city_markers)],
-                markersize=4,
-                linewidth=1.8,
-                label=f"{city} · {scenario['label']}",
+                marker="o",
+                markersize=2.4,
+                linewidth=1.3,
+                label=scenario["label"],
             )
-    ax.set_xlabel("Yerel saat")
-    ax.set_ylabel("Başarısızlık oranı (%)")
-    ax.set_xlim(-0.5, 23.5)
-    ax.set_xticks(range(0, 24, 2))
-    ax.set_ylim(bottom=0)
-    _style_axes(ax, value_axis="y")
-    ax.legend(frameon=True, edgecolor=GRID, loc="lower center", ncol=max(1, len(scenarios)),
-              fontsize=8, bbox_to_anchor=(0.5, -0.26))
-    _header(fig, ax, "Saatlik Başarısızlık Oranı", "Renk senaryoyu, işaret biçimi şehri gösterir")
+        ax.set_title(f"{city} · {_tr_int(city_totals[city])} sürüş", fontsize=8.3, color=INK2, pad=2)
+        ax.set_xlim(-0.5, 23.5)
+        ax.set_xticks(range(0, 24, 6))
+        _style_axes(ax, value_axis="y")
+    for j in range(len(panels), len(axes_flat)):
+        axes_flat[j].set_axis_off()
+
+    handles, plot_labels = axes_flat[0].get_legend_handles_labels()
+    fig.legend(
+        handles, plot_labels, loc="upper right", ncol=max(1, len(scenarios)),
+        frameon=True, edgecolor=GRID, fontsize=9, bbox_to_anchor=(0.99, 0.985),
+    )
+    fig.text(0.5, 0.015, "Yerel saat", ha="center", fontsize=10, color=INK2)
+    fig.text(0.008, 0.5, "Başarısızlık oranı (%)", va="center", rotation="vertical",
+             fontsize=10, color=INK2)
+
+    subtitle = "Her panel bir şehir; ortak dikey ölçek"
+    if dropped:
+        subtitle += f" — {len(dropped)} şehir düşük hacim nedeniyle gösterilmedi ({', '.join(dropped)})"
+    fig.suptitle("Saatlik Başarısızlık Oranı", x=0.012, y=0.985, ha="left",
+                 fontsize=15, fontweight="bold", color=INK)
+    fig.text(0.012, 0.925, subtitle, ha="left", fontsize=9.5, color=INK2)
     return _save(fig, out_dir, "scenario_hourly.png")
+
+
+def chart_threshold_scan(scan: dict, out_dir: Path) -> Path:
+    """Eşik Taraması — her mesafe eşiği bir çizgi, x süre eşiği, y F1 (isabet).
+
+    Boşa görev/kapsam gibi diğer sütunlar bu grafikte YOK — F1 tek başına karar
+    değişkenidir (bkz. core/threshold_scan modül dokstring'i); ayrıntı yalnız tablo
+    ve rapor metninde.
+    """
+    rows = scan["rows"]
+    durations = scan["duration_grid"]
+    distances = scan["distance_grid"]
+    by_cell = {(r["duration_threshold"], r["distance_threshold"]): r for r in rows}
+    cmap = matplotlib.colormaps["Blues"]
+    colors = [
+        cmap(0.35 + 0.55 * i / max(1, len(distances) - 1)) for i in range(len(distances))
+    ]
+    fig, ax = _new_fig(9, 5.6)
+    for idx, dist in enumerate(distances):
+        series = [by_cell[(d, dist)] for d in durations]
+        ax.plot(
+            durations,
+            [r["f1_pct"] for r in series],
+            color=colors[idx],
+            marker="o",
+            markersize=4,
+            linewidth=1.8,
+            label=f"mesafe < {_tr_dec(dist, 0)} m",
+        )
+    baseline = scan["baseline"]
+    ax.axvline(baseline["duration"], color=MUTED, linestyle="--", linewidth=1)
+    rec = scan["recommended"]
+    ax.scatter(
+        [rec["duration_threshold"]], [rec["f1_pct"]],
+        s=150, marker="*", color=ORANGE, zorder=5, label="Senaryo A — isabet/kapsam",
+    )
+    cons = scan["conservative"]
+    if cons is not scan["baseline_row"]:
+        ax.scatter(
+            [cons["duration_threshold"]], [cons["f1_pct"]],
+            s=110, marker="D", color=AQUA, zorder=5, label="Senaryo B — boşa görev azaltma",
+        )
+    ax.set_xlabel("Süre eşiği (sn)")
+    ax.set_ylabel("F1 (%)")
+    ax.set_xticks(durations)
+    _style_axes(ax, value_axis="y")
+    ax.legend(frameon=True, edgecolor=GRID, loc="best", fontsize=8.5)
+    _header(
+        fig, ax,
+        "Eşik Taraması — Özel Kural İsabeti (F1)",
+        f"Mevcut Kural {_tr_dec(baseline['duration'], 0)} sn / "
+        f"{_tr_dec(baseline['distance'], 0)} m referans (kesikli çizgi)",
+    )
+    return _save(fig, out_dir, "threshold_scan.png")

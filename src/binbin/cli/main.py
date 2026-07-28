@@ -108,6 +108,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--sinyal-denetimi", action="store_true", dest="sinyal_denetimi",
         help="Kural kitabındaki her kodun ayırt ediciliğini (lift) ölçüp raporla",
     )
+    p_an.add_argument(
+        "--esik-taramasi", action="store_true", dest="esik_taramasi",
+        help="Özel Kural süre/mesafe ızgarasını F1 ile tarar, en isabetli eşiği önerir",
+    )
     p_an.add_argument("--charts", type=Path, metavar="DIR", help="PNG'leri bu klasöre üret")
     p_an.add_argument(
         "--wi-duration", type=float, metavar="SN",
@@ -289,7 +293,7 @@ def _custom_rule_from_args(args: argparse.Namespace) -> tuple[float, float] | No
 
 def cmd_analyze(args: argparse.Namespace) -> None:
     from binbin.data.postgres_repo import PostgresRideRepository
-    from binbin.core import scenario_analysis
+    from binbin.core import scenario_analysis, threshold_scan
 
     custom_thr = _custom_rule_from_args(args)
     repo = PostgresRideRepository()
@@ -303,14 +307,24 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     # Sinyal-join yalnız başarısız OLABİLECEK sürüşlerde çalışsın: sınırı senaryoların
     # kendi eşiklerinden türetiyoruz, sabit yazmıyoruz (yeni senaryo eklenirse sınır
     # kendiliğinden genişler). Ölçüm: timeline 37,2 sn → aday guard'ıyla belirgin düşüş.
-    bounds = scenario_analysis.candidate_bounds(
+    scenario_bounds = scenario_analysis.candidate_bounds(
         scenario_analysis.build_scenarios(custom_thr)
     )
+    scan_acc = threshold_scan.ThresholdScanAccumulator() if args.esik_taramasi else None
+    bounds = scenario_bounds
+    if scan_acc is not None:
+        # Eşik taraması ızgarası kendi (süre, mesafe) üst sınırını gerektirir — sinyal-join
+        # bunun dışındaki satırlarda hiç çalışmaz, `assess_ride` field_fault'u NULL görür ve
+        # isabet olduğundan düşük ölçülür. Eleman bazında max: iki bağımsız üst sınırın
+        # BİRLEŞİMİ, ne senaryoların ne taramanın sınırını daraltmaz.
+        scan_bounds = threshold_scan.grid_bounds()
+        bounds = (max(bounds[0], scan_bounds[0]), max(bounds[1], scan_bounds[1]))
     report = scenario_analysis.analyze_scenarios(
         repo.analysis_timeline(ascope, candidate_bounds=bounds),
         custom=custom_thr,
         cost_rows=repo.ops_cost_rows(ascope),
         ooc_counts=repo.out_of_content_counts(ascope),
+        scan=scan_acc,
     )
     _print_scenario_definitions(report)
     _print_scenario_overview(report)
@@ -329,6 +343,9 @@ def cmd_analyze(args: argparse.Namespace) -> None:
         _print_scenario_subregions(report)
     if args.derin:
         _print_scenario_hourly(report)
+    scan_report = scan_acc.finalize() if scan_acc is not None else None
+    if scan_report is not None:
+        _print_threshold_scan(scan_report)
 
     if args.charts:
         from binbin.reporting import charts
@@ -347,6 +364,8 @@ def cmd_analyze(args: argparse.Namespace) -> None:
             paths.append(charts.chart_scenario_subregions(report, args.charts))
         if args.derin:
             paths.append(charts.chart_scenario_hourly(report, args.charts))
+        if scan_report is not None:
+            paths.append(charts.chart_threshold_scan(scan_report, args.charts))
         print("\nGrafikler:")
         for p in paths:
             print(f"  {p}")
@@ -693,6 +712,96 @@ def _print_regulation_matrix(report: dict) -> None:
             print(f"{label:<16}{cells}{_tr_int(row['total']):>10}")
     if len(scenarios) > 1:
         print("\nNot: her senaryo kendi başarısız kümesine göre ayrı hesaplanır.")
+
+
+def _print_threshold_scan(scan: dict) -> None:
+    """EŞİK TARAMASI — Özel Kural süre/mesafe ızgarasının F1 ile taranması.
+
+    F1'in payda/paydası eşikten BAĞIMSIZ bir kanıta (metin şikayeti / durum defteri
+    sinyali / 1 yıldız / end_reason) dayanır (bkz. core/threshold_scan modül dokstring'i).
+    Boşa görev sütunu F1'e girmez, yalnız operasyonel etki tahminidir.
+
+    İki karşıt hedef ayrı ayrı basılır (isabet ızgarada sabit kaldığı için "tek doğru
+    nokta" yok, bkz. core/threshold_scan): Senaryo A kaçırılan bağımsız-kanıtlı şikayeti
+    azaltır (gevşetme), Senaryo B işaretlenen hacmi/boşa görevi azaltır (sıkılaştırma) —
+    B, A'nın Mevcut Kural'a göre simetrik aynasıdır, ayrı bir optimizasyon değildir.
+    """
+    from binbin.core.threshold_scan import BASELINE
+
+    _section("EŞİK TARAMASI")
+    print(
+        f"Aday havuzu: süre < {_fmt_thr(scan['pool_bounds']['duration'])} sn ve "
+        f"mesafe < {_fmt_thr(scan['pool_bounds']['distance'])} m  "
+        f"({_tr_int(scan['pool_size'])} sürüş, bağımsız kanıtlı {_tr_int(scan['reported_in_pool'])})"
+    )
+    print(
+        f"{'Süre(sn)':>9}{'Mesafe(m)':>11}{'İşaretli':>11}{'İsabet':>9}"
+        f"{'Kapsam':>9}{'F1':>8}{'Boşa görev':>13}  "
+    )
+    print("─" * 82)
+    for row in sorted(scan["rows"], key=lambda r: (r["duration_threshold"], r["distance_threshold"])):
+        tag = " ← Mevcut Kural" if row["is_baseline"] else ""
+        if scan["recommended"] is row:
+            tag += "  ★ Senaryo A (isabet/kapsam)"
+        if scan["conservative"] is row and scan["conservative"] is not scan["baseline_row"]:
+            tag += "  ◆ Senaryo B (boşa görev azaltma)"
+        print(
+            f"{_fmt_thr(row['duration_threshold']):>9}{_fmt_thr(row['distance_threshold']):>11}"
+            f"{_tr_int(row['flagged']):>11}{_tr_pct(row['precision_pct']):>9}"
+            f"{_tr_pct(row['recall_pct']):>9}{_tr_pct(row['f1_pct']):>8}"
+            f"{_tr_int(row['wasted_missions']):>13}{tag}"
+        )
+
+    base, a, b = scan["baseline_row"], scan["recommended"], scan["conservative"]
+    _print_threshold_scenario_comparison(base, a, b)
+
+    print(
+        f"\nSenaryo A — İsabet/Kapsam Odaklı (süre<{_fmt_thr(a['duration_threshold'])} sn, "
+        f"mesafe<{_fmt_thr(a['distance_threshold'])} m):"
+    )
+    print(f"  + Bağımsız kanıtlı şikayetlerin {_tr_pct(a['recall_pct'])}'ini yakalar "
+          f"(Mevcut Kural {_tr_pct(base['recall_pct'])}).")
+    print(f"  + İsabet hemen hemen aynı kalır ({_tr_pct(a['precision_pct'])}) — eklenen sürüşler gürültü değil.")
+    print(f"  - {_signed_int(a['flagged_delta'])} sürüş ek olarak 'başarısız' damgası alır, "
+          f"{_signed_int(a['wasted_delta'])} boşa görev.")
+
+    missed_base = _tr_pct(100.0 - base["recall_pct"])
+    missed_b = _tr_pct(100.0 - b["recall_pct"])
+    print(
+        f"\nSenaryo B — Boşa Görev Azaltma Odaklı (süre<{_fmt_thr(b['duration_threshold'])} sn, "
+        f"mesafe<{_fmt_thr(b['distance_threshold'])} m):"
+    )
+    print(f"  + İşaretlenen sürüş {_signed_int(b['flagged_delta'])}, boşa görev {_signed_int(b['wasted_delta'])}.")
+    print(f"  - Kapsam {_tr_pct(b['recall_pct'])}'e düşer — bağımsız kanıtlı şikayetlerin "
+          f"~{missed_b} hiç incelenmez (Mevcut Kural'da ~{missed_base}).")
+    print(f"  - İsabet iyileşmiyor ({_tr_pct(b['precision_pct'])}) — azalma 'daha akıllı seçim' değil, "
+          "'daha az bakmak'tan geliyor.")
+
+    print(
+        "\nNot: eşik değişikliği gerçek bir sürüşü başarılı/başarısız YAPMAZ; yalnız "
+        "'başarısız' damgasını\ndeğiştirir. Senaryo A'nın kazancı yanlış damgadan doğan "
+        "boşa görevin AZALMASINDAN değil, kaçırılan\nşikayetin azalmasından gelir; "
+        "Senaryo B'nin 'azalması' ise gerçek bir iyileşme değil, daha az\nsürüşün "
+        "incelenmesinden kaynaklanır. Hiçbirinde ciro/TL iddiası yoktur (ops_cost_model "
+        "boş)."
+    )
+
+
+def _print_threshold_scenario_comparison(base: dict, a: dict, b: dict) -> None:
+    """SENARYO KARŞILAŞTIRMASI — Mevcut Kural / Senaryo A / Senaryo B yan yana."""
+    print("\nSenaryo Karşılaştırması")
+    col = 16
+    print(f"{'':<20}{'Mevcut Kural':>{col}}{'Senaryo A':>{col}}{'Senaryo B':>{col}}")
+    print("─" * (20 + col * 3))
+    rows = (
+        ("İşaretlenen sürüş", "flagged", _tr_int),
+        ("İsabet", "precision_pct", _tr_pct),
+        ("Kapsam", "recall_pct", _tr_pct),
+        ("F1", "f1_pct", _tr_pct),
+        ("Boşa görev", "wasted_missions", _tr_int),
+    )
+    for label, key, fmt in rows:
+        print(f"{label:<20}{fmt(base[key]):>{col}}{fmt(a[key]):>{col}}{fmt(b[key]):>{col}}")
 
 
 _MAX_HOTSPOT_ROWS = 100  # araç sıcak nokta tablosunda gösterilecek azami satır

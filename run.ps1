@@ -113,7 +113,7 @@ if ($LASTEXITCODE -ne 0) { Write-Host "ASSESS BASARISIZ!" -ForegroundColor Red; 
 
 Write-Host "`n========== ADIM 4/4: ANALYZE (analiz + grafikler) ==========" -ForegroundColor Cyan
 # Esik karsilastirmasi: Mevcut Kural (120sn/60m) ve kullanicinin girdigi Ozel Kural.
-& $py -m binbin.cli analyze --false-fault --detay --derin --charts out\ --wi-duration $wiDurationText --wi-distance $wiDistanceText @scopeArgs
+& $py -m binbin.cli analyze --false-fault --detay --derin --esik-taramasi --charts out\ --wi-duration $wiDurationText --wi-distance $wiDistanceText @scopeArgs
 if ($LASTEXITCODE -ne 0) { Write-Host "ANALYZE BASARISIZ!" -ForegroundColor Red; exit 1 }
 
 Write-Host "`n========== TAMAMLANDI ==========" -ForegroundColor Green

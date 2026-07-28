@@ -16,6 +16,7 @@ from typing import Iterable, Mapping
 
 from binbin.core.classifier import classify_ride
 from binbin.core.false_fault import assess_ride
+from binbin.core.threshold_scan import ThresholdScanAccumulator
 from binbin.domain.enums import (
     ClassificationSource,
     FailureCategory,
@@ -526,6 +527,7 @@ def analyze_scenarios(
     custom: tuple[float, float] | None = None,
     cost_rows: list[dict] | None = None,
     ooc_counts: dict | None = None,
+    scan: ThresholdScanAccumulator | None = None,
 ) -> dict:
     scenarios = build_scenarios(custom)
     accs = {s.key: _new_accumulator(s) for s in scenarios}
@@ -545,6 +547,8 @@ def analyze_scenarios(
 
     for row in rows:
         common["total"] += 1
+        if scan is not None:
+            scan.feed(row)
         source_failed = _outcome_value(row.get("outcome")) == RideOutcome.BASARISIZ_HARD.value
         if source_failed:
             common["source_failed"] += 1
