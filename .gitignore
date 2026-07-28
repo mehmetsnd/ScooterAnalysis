@@ -28,6 +28,10 @@ htmlcov/
 /out/
 *.log
 
+# Rapor: gerçek operasyonel rakamlar (şehir/araç/alt-bölge bazlı) içerir —
+# repo public olduğu için commit edilmez, yalnız lokalde/private kanalda tutulur.
+/docs/
+
 # IDE ve İşletim Sistemi
 .claude/
 .vscode/
