@@ -380,7 +380,6 @@ def transform_staging_to_ride(engine: Engine, scope: Scope, data_load_id: int) -
         _insert_rides(conn, clause, params, data_load_id)
         _insert_feedback(conn, data_load_id)
 
-        # sayaçlar
         report.rows_eligible = conn.execute(
             text(f"SELECT count(*) FROM stg_rental_raw s WHERE {_ELIGIBLE_RAW} {clause}"),
             params,
