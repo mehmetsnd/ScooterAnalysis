@@ -101,9 +101,10 @@ def assess_ride(
 ) -> FaultAssessment:
     """Arızalı denilen bir sürüşün sahte mi yoksa gerçek mi olduğunu hesaplar.
 
-    Bunu anlamak için AYNI aracın bir sonraki sürüşüne (`next_ride`) bakarız.
-    Eğer araç kısa süre içinde başka biri tarafından kiralanıp uzun mesafe
-    gidebilmişse, önceki kullanıcının arıza bildirimi sahtedir (healthy_proof = True).
+    Bunu anlamak için AYNI aracın bir sonraki sürüşüne (`next_ride`) bakarız: kısa
+    süre içinde (≤360 dk) anlamlı mesafe (>200 m) gidebilmişse, bu healthy_proof=True
+    sayılır. Kullanıcının aynı/farklı olduğu veya arada bakım yapıldığı kontrol
+    edilmez — healthy_proof yalnız "araç bir sonraki kiralamada çalıştı" kanıtıdır.
 
     Ayrıca `rating` (yıldız) = 1 ise bunu potansiyel arıza şikayeti sayarız.
     `field_fault`: araç durum-değişim defterinde bu sürüşün penceresinde açık bir
