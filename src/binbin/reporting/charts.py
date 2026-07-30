@@ -199,6 +199,16 @@ def chart_scenario_causes(report: dict, out_dir: Path) -> Path:
     if not keys:
         return _empty_chart("Neden Dağılımı", "Senaryolara göre başarısızlık nedenleri",
                             out_dir, "scenario_causes.png")
+    # SİNYALSİZ kütlesinin asıl bulgusu (rapor §9.2): büyük çoğunluğu bildirimsiz,
+    # yalnız küçük bir dilimi bildirimli ama kategori atanamayan. Bu ayrım
+    # regulation_matrix'in SINYALSIZ satırından geliyor (reported / no_report).
+    reported_by_scenario = []
+    for scenario in scenarios:
+        row = next(
+            (r for r in scenario["regulation_matrix"]["rows"] if r["category"] == "SINYALSIZ"),
+            None,
+        )
+        reported_by_scenario.append(row["reported"] if row else 0)
     ordered = sorted(keys, key=lambda key: max(v.get(key, 0) for v in values), reverse=True)
     x = list(range(len(ordered)))
     width = 0.75 / len(scenarios)
@@ -206,7 +216,15 @@ def chart_scenario_causes(report: dict, out_dir: Path) -> Path:
     for idx, (scenario, mapping) in enumerate(zip(scenarios, values)):
         positions = [v - 0.375 + width / 2 + idx * width for v in x]
         counts = [mapping.get(key, 0) for key in ordered]
-        bars = ax.bar(positions, counts, width, color=_SCENARIO_COLORS[idx], label=scenario["label"])
+        reported = reported_by_scenario[idx]
+        no_report = [c - reported if key == "SİNYALSİZ" else c for key, c in zip(ordered, counts)]
+        bars = ax.bar(positions, no_report, width, color=_SCENARIO_COLORS[idx], label=scenario["label"])
+        sig_pos = positions[ordered.index("SİNYALSİZ")]
+        ax.bar(
+            sig_pos, reported, width, bottom=counts[ordered.index("SİNYALSİZ")] - reported,
+            color=_SCENARIO_COLORS[idx], edgecolor=SURFACE, hatch="////",
+            label="— bildirimli ama kategorisiz" if idx == 0 else None,
+        )
         ax.bar_label(bars, labels=[_tr_int(c) for c in counts], padding=3, fontsize=8, color=INK2,
                      rotation=90)
     ax.set_xticks(x, ordered)
@@ -215,7 +233,8 @@ def chart_scenario_causes(report: dict, out_dir: Path) -> Path:
     ax.margins(y=0.3)
     _style_axes(ax, value_axis="y")
     ax.legend(frameon=True, edgecolor=GRID, loc="upper right")
-    _header(fig, ax, "Neden Dağılımı", "Her senaryonun başarısız sürüşleri yeniden sınıflandırıldı")
+    _header(fig, ax, "Neden Dağılımı",
+            "SİNYALSİZ çubuğunda taralı üst dilim: bildirim var ama kategori atanamadı")
     return _save(fig, out_dir, "scenario_causes.png")
 
 
@@ -237,7 +256,9 @@ def chart_scenario_control(report: dict, out_dir: Path) -> Path:
     ax.set_ylim(bottom=0)
     ax.margins(y=0.25)
     _style_axes(ax, value_axis="y")
-    ax.legend(frameon=True, edgecolor=GRID, loc="upper right")
+    # loc="upper right" değer etiketiyle çakışıyordu (bildirimsiz grup en yüksek bar,
+    # sağda) — sol grup her zaman daha kısa olduğundan legend'ı oraya taşımak güvenli.
+    ax.legend(frameon=True, edgecolor=GRID, loc="upper left")
     _header(fig, ax, "Kontrol Grubu Karşılaştırması", "Sağlamlık kanıtı her senaryoda yeniden hesaplandı")
     return _save(fig, out_dir, "scenario_control_group.png")
 
@@ -261,7 +282,7 @@ def chart_scenario_false_fault(report: dict, out_dir: Path) -> Path:
     ax.margins(y=0.24)
     _style_axes(ax, value_axis="y")
     ax.legend(frameon=True, edgecolor=GRID, loc="upper right")
-    _header(fig, ax, "Sahte Arıza Özeti", "Ana görünüm yalnız Geçici Teknik ve Regülasyon ayrımını gösterir")
+    _header(fig, ax, "Sahte Alarm Şüphesi Özeti", "Ana görünüm yalnız Geçici Teknik ve Regülasyon ayrımını gösterir")
     return _save(fig, out_dir, "scenario_false_fault.png")
 
 
@@ -324,13 +345,18 @@ def chart_scenario_subregions(report: dict, out_dir: Path) -> Path:
         density = [mapping.get(key, {}).get("false_alarm_per_1000", 0) for key in selected]
         bars = ax.barh(positions, density, height, color=_SCENARIO_COLORS[idx], label=scenario["label"])
         ax.bar_label(bars, labels=[_tr_dec(v) for v in density], padding=3, fontsize=8, color=INK2)
-    ax.set_yticks(y, [f"{key[0]} · Bölge {key[1]}" for key in selected])
+    n_by_key = {
+        key: next(m[key]["total_rides"] for m in mappings if key in m) for key in selected
+    }
+    ax.set_yticks(
+        y, [f"{key[0]} · Bölge {key[1]} (n={_tr_int(n_by_key[key])})" for key in selected]
+    )
     ax.invert_yaxis()
     ax.set_xlabel("Geçici teknik + regülasyon şüphesi / 1000 sürüş")
     ax.margins(x=0.18)
     _style_axes(ax, value_axis="x")
     ax.legend(frameon=True, edgecolor=GRID, loc="lower right")
-    _header(fig, ax, "Alt Bölge Sahte-Arıza Yoğunluğu", "Senaryolara göre en yoğun ilk 15 alt bölge")
+    _header(fig, ax, "Alt Bölge Sahte Alarm Şüphesi Yoğunluğu", "Senaryolara göre en yoğun ilk 15 alt bölge; n = alt bölgenin toplam sürüş sayısı")
     return _save(fig, out_dir, "scenario_subregions.png")
 
 

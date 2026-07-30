@@ -667,8 +667,8 @@ def _print_technical_detail(report: dict) -> None:
             continue
         print(f"\n{scenario['label']}  (toplam teknik: {_tr_int(detail['total'])})")
         print(
-            f"{'Kaynak':<16}{'Neden':<26}{'Sürüş':>9}{'Gerçek':>9}"
-            f"{'Sahte':>9}{'Bildirimsiz':>13}{'Boşa görev':>13}"
+            f"{'Kaynak':<16}{'Neden':<26}{'Sürüş':>9}{'Gerçek(ş)':>9}"
+            f"{'Sahte(ş)':>9}{'Bildirimsiz':>13}{'Boşa görev':>13}"
         )
         print("─" * 95)
         for row in rows:
@@ -680,7 +680,8 @@ def _print_technical_detail(report: dict) -> None:
             )
     print(
         "\nNot: 'Durum defteri' satırları araç IoT durum-değişim kaydından (kural kitabı "
-        "doğrulanabilir\nkanıt), 'Metin' satırları sürüş mesajı/kullanıcı yorumundan gelir."
+        "doğrulanabilir\nkanıt), 'Metin' satırları sürüş mesajı/kullanıcı yorumundan gelir. "
+        "(ş) = şüpheli hipotez, kesin hüküm değil."
     )
 
 
