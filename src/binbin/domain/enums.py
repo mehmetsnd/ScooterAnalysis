@@ -1,37 +1,13 @@
-"""Projedeki tüm sabitler ve Enum'lar. 
-Not: Buradaki değerler, DB şemasındaki (01_reset_ve_kurulum.sql vb.) tiplerle birebir aynıdır.
-Veritabanına yazarken veya okurken string eşleşmesi için burası referans alınır.
+"""Python'un DB'den OKUDUĞU enum tipleri. Değerler `db/*.sql` tipleriyle birebir aynıdır.
+
+⚠️ Üye listeleri TAM olmalı: kod DB string'ini doğrudan enum'a çevirir (`RideOutcome(row[...])`,
+`_enum_or_none`). Şu an hiçbir kod yolunun üretmediği bir üyeyi (ör. RideOutcome.DEGRADED)
+silmek, DB'de o değer varsa çalışma zamanında ValueError demektir — ölü görünse de silinmez.
+Python'un hiç okumadığı tablolara ait tipler (vehicle_status, rule_type, enforcement_action)
+ise burada TUTULMAZ; onların tek doğru kaynağı `db/*.sql`'dir.
 """
 
 from enum import Enum
-
-
-class VehicleStatus(str, Enum):
-
-    AVAILABLE = "AVAILABLE"
-    ON_TRIP = "ON_TRIP"
-    REMOVED = "REMOVED"
-    MAINTENANCE = "MAINTENANCE"
-
-
-class RuleType(str, Enum):
-
-    NO_RIDE = "NO_RIDE"
-    SLOW_ZONE = "SLOW_ZONE"
-    NO_PARKING = "NO_PARKING"
-    MANDATORY_PARKING = "MANDATORY_PARKING"
-    OPERATING_HOUR = "OPERATING_HOUR"
-    CITY_BOUNDARY = "CITY_BOUNDARY"
-    SPEED_LIMIT = "SPEED_LIMIT"
-
-
-class EnforcementAction(str, Enum):
-
-    MOTOR_CUTOFF = "MOTOR_CUTOFF"
-    SPEED_THROTTLE = "SPEED_THROTTLE"
-    BLOCK_END_RIDE = "BLOCK_END_RIDE"
-    BLOCK_START = "BLOCK_START"
-    AUDIBLE_WARNING = "AUDIBLE_WARNING"
 
 
 class RawRentalStatus(str, Enum):
@@ -92,17 +68,10 @@ class FailureReason(str, Enum):
 
 
 class ClassificationSource(str, Enum):
-    """Sınıflandırma kanıtının kaynağı (DB: classification_source).
+    """Sınıflandırma kanıtının kaynağı. ck_category_needs_source: kategori doluysa NONE olamaz.
 
-    ck_category_needs_source: failure_category NULL DEĞİLSE source NONE olamaz.
-
-    FIELD_SIGNAL : sürüş kaydındaki telemetri alanları (unlock_ack, connection_lost,
-                   motor_error_code…). Mevcut sürüş CSV'sinde hepsi NULL — kod hazır
-                   ama fiilen üretilmiyor.
-    REASON_CODE  : araç durum-değişim defterinden (fleet_status_event) gelen, kural
-                   kitabında (fleet_status_reason) AÇIK teknik arıza olarak işaretlenmiş
-                   sinyal. Haziran 2026 defteri yüklendiğinden beri classifier bu kaynağı
-                   ÜRETİR (bkz. core/classifier.py adım 6).
+    FIELD_SIGNAL : sürüş telemetrisi — mevcut CSV'de hepsi NULL, kod hazır ama üretilmiyor.
+    REASON_CODE  : durum defterinden gelen, kural kitabında açık teknik arıza sayılan sinyal.
     """
 
     FIELD_SIGNAL = "FIELD_SIGNAL"

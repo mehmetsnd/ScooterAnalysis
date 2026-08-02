@@ -1,14 +1,7 @@
-"""Domain modelleri — saf veri taşıyıcıları (DTO/Entity).
+"""Domain modelleri — saf DTO'lar. Numeric(x,2) kolonları core'da float taşınır.
 
-Alan sırası DB ile birebir olmayabilir (dataclass: default'suz alanlar üstte) ama
-içerik DB tablolarıyla eşleşir. Numeric(x,2) kolonları core'da float taşınır.
-
-KAPSAM: yalnız fiilen KULLANILAN DTO'lar burada yaşar. Bir zamanlar tüm tablolar
-için (Country, City, Vehicle, Feedback, DataLoad…) dataclass envanteri tutuluyordu;
-hiçbirinin çalışma zamanında kullanıcısı yoktu ve DB şemasını ikinci kez —
-senkron kalması elle sağlanan, hiçbir testin korumadığı biçimde — anlatıyorlardı.
-Şemanın TEK doğru kaynağı `db/*.sql`'dir. Yeni bir DTO'ya gerçekten ihtiyaç
-duyulduğunda o zaman eklenir.
+Yalnız fiilen KULLANILAN DTO'lar burada yaşar; tablo envanteri tutulmaz, şemanın tek
+doğru kaynağı `db/*.sql`'dir.
 """
 
 from dataclasses import dataclass, field
@@ -26,11 +19,10 @@ from binbin.domain.enums import (
 
 @dataclass
 class Ride:
-    """Sürüş verisi (DB: ride). Uygulamanın ana Aggregate Root'udur.
-    
-    ÖNEMLİ: Telemetri alanları (unlock_ack, connection_lost vb.) mevcut CSV'de 
-    bulunmadığı için hepsi NULL gelir. İleride Lead'den bu dataları istersek 
-    diye önden tasarlandı. Kod analizleri bu NULL durumlara karşı güvenli (Null-safe) olmalıdır.
+    """Sürüş verisi (DB: ride). Yalnız core'un OKUDUĞU alanları taşır — tam tablo aynası değil.
+
+    Telemetri alanları mevcut CSV'de NULL gelir (classifier null-safe okur); DB'de var olup
+    hiçbir kod yolunun okumadığı kolonlar (ack_latency_ms, gps_fix_ok…) burada TUTULMAZ.
     """
 
     ride_id: int
@@ -56,17 +48,12 @@ class Ride:
     currency: Optional[str] = None
     # Telemetri — CSV'de yok, NULL. Kod NULL-güvenli olmalı.
     unlock_ack: Optional[bool] = None
-    ack_latency_ms: Optional[int] = None
     start_battery_pct: Optional[int] = None
     connection_lost: Optional[bool] = None
-    gps_fix_ok: Optional[bool] = None
     motor_error_code: Optional[str] = None
     bms_error_code: Optional[str] = None
-    lock_state_ok: Optional[bool] = None
-    parking_photo_ok: Optional[bool] = None
     user_cancelled: Optional[bool] = None
     payment_status: Optional[PaymentStatus] = None
     data_quality_flags: list[str] = field(default_factory=list)
     data_load_id: Optional[int] = None
-    ingested_at: Optional[datetime] = None
 
