@@ -1,1 +1,1 @@
-"""Binbin — paylaşımlı e-skuter başarısız sürüş analizi + regülasyon matrisi."""
+"""Binbin — paylaşımlı scooter başarısız sürüş analizi + regülasyon matrisi."""
