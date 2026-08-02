@@ -1,17 +1,15 @@
-"""Repository Arayüzü (Protocol) — Dependency Inversion (DIP) kuralını burada uyguluyoruz.
+"""Repository arayüzü (Protocol) — DIP. Core DB'ye değil bu arayüze bağlıdır; kaynak
+değişse core değişmez. `analysis_timeline` sürüşleri STREAM eder, iki senaryolu hesap
+saf core fonksiyonları yeniden kullanılarak Python'da yapılır (SQL'de tekrarlanmaz).
 
-Core (Analiz) katmanı doğrudan veritabanına bağlanmaz, sadece bu Protocol'e (arayüze) güvenir.
-Yarın Postgres yerine MongoDB veya Mock bir database gelse bile Core katmanındaki tek satır kod değişmez.
-
-Not: Canlı analiz yolu (`analysis_timeline`) araç/zaman sıralı sürüşleri DB'den
-STREAM eder; iki senaryolu (Mevcut/Özel Kural) hesap Python tarafında, saf core
-fonksiyonları (classify_ride/assess_ride) yeniden kullanılarak yapılır — böylece
-classify/assess mantığı SQL'de tekrarlanmaz. `ops_cost_rows` küçük maliyet tablosunu
-hazır list[dict] olarak döner.
+Protocol'ler `runtime_checkable`: `PostgresRideRepository`'nin sözleşmeye uyduğu
+`test_repository_protocol.py`'de isinstance ile KONTROL EDİLİR. Aksi hâlde arayüz ile
+implementasyon sessizce ayrışır (bir metot yeniden adlandırılır, Protocol eski adı
+belgelemeye devam eder) — bu dosya yalnız dokümantasyon olur.
 """
 
 from dataclasses import dataclass
-from typing import Iterable, Optional, Protocol
+from typing import Iterable, Optional, Protocol, runtime_checkable
 
 from binbin.config import Scope
 
@@ -24,6 +22,7 @@ class AnalysisScope:
     city_ids: Optional[list[int]] = None
 
 
+@runtime_checkable
 class RideCommandRepository(Protocol):
     """Veritabanına yazma/güncelleme yapan arayüz (CQRS - Command)."""
 
@@ -40,6 +39,7 @@ class RideCommandRepository(Protocol):
         raise NotImplementedError
 
 
+@runtime_checkable
 class RideQueryRepository(Protocol):
     """Analiz katmanının ihtiyaç duyduğu okuma arayüzü (CQRS - Query).
 
@@ -79,3 +79,16 @@ class RideQueryRepository(Protocol):
         `core/signal_audit.summarize_signal_discrimination` bunu lift'e çevirir.
         """
         raise NotImplementedError
+
+    def list_data_loads(self) -> list[dict]:
+        """Yükleme denetim kaydı (`loads` komutu)."""
+        raise NotImplementedError
+
+
+@runtime_checkable
+class RideRepository(RideQueryRepository, RideCommandRepository, Protocol):
+    """CLI'ın bağlandığı TEK soyutlama (okuma + yazma).
+
+    Komutlar somut `PostgresRideRepository`'yi değil bunu bilir; kaynağı seçen tek yer
+    `cli.main._repository()` composition root'udur (DIP).
+    """

@@ -1,8 +1,8 @@
 """Backend sağlamlaştırma testleri — DB'siz (bağlantı kurulmaz).
 
 Kapsam: SQL güvenlik yardımcıları (scope clause bind-param'lı mı, partition adı
-guard'ı enjeksiyonu reddediyor mu) ve config sağlamlığı (DATABASE_URL yoksa
-anlaşılır hata, engine tekil/cached).
+guard'ı enjeksiyonu reddediyor mu), config sağlamlığı (DATABASE_URL yoksa anlaşılır
+hata, engine tekil/cached) ve mimari sözleşme (Repository Protocol uyumu, DIP).
 """
 
 import pytest
@@ -10,6 +10,7 @@ import pytest
 from binbin.data.ingest import (
     _FLEET_STATUS_EVENT_PARTITION_NAME_RE,
     _PARTITION_NAME_RE,
+    close_data_load_success,
     ensure_month_partitions,
 )
 from binbin.data.engine import (
@@ -101,10 +102,8 @@ def test_ensure_month_partitions_bilinmeyen_parent_reddedilir():
         )
 
 
-# --- Sinyal-join penceresi: sonraki sürüşte KESİLİR -------------------------
-# Regresyon kilidi: kırpma olmadan, sürüş bittikten sonra tekrar kiralanan aracın
-# YENİ sürüşü sırasında düşen arıza olayı ÖNCEKİ sürüşe de atanıyordu (ölçüm:
-# 6.423 atamanın %20,1'i). Bu, var olmayan bir kanıtı kategoriye çevirmektir.
+# Regresyon kilidi: kırpma olmadan, tekrar kiralanan aracın YENİ sürüşündeki arıza olayı
+# ÖNCEKİ sürüşe de atanıyordu (6.423 atamanın %20,1'i) — var olmayan kanıtı kategoriye çevirir.
 def test_field_signal_join_sonraki_suruste_kesilir():
     sql = field_signal_join_sql()
     assert "LEAST(" in sql
@@ -120,11 +119,8 @@ def test_field_signal_join_kural_kitabi_etiketini_tasir():
     assert "fsr.description    AS field_signal_desc" in field_signal_join_sql()
 
 
-# --- Aday guard'ı: LATERAL'i başarısız-olabilecek sürüşlerle sınırlar -------
-# Regresyon kilidi: assess_all guard'sız 51,9 sn sürüyordu (LATERAL 1,03M satırın
-# TAMAMINDA çalışıyordu, oysa field_fault yalnız BASARISIZ_HARD satırlarında
-# okunuyordu). "outcome" guard'ı bunu 9,1 sn'ye indirdi — sonuçlar DB'de birebir
-# aynı doğrulandı (52.755 satır, byte-eşit).
+# Regresyon kilidi: guard'sız assess_all 51,9 sn (LATERAL 1,03M satırın tamamında çalışıyordu);
+# "outcome" guard'ı 9,1 sn'ye indirdi, sonuç DB'de birebir aynı (52.755 satır, byte-eşit).
 def test_field_signal_join_guardsiz_varsayilan():
     sql = field_signal_join_sql()
     assert "BASARISIZ_HARD" not in sql
@@ -167,3 +163,119 @@ def test_get_engine_tekil(monkeypatch):
         assert e1 is e2
     finally:
         get_engine.cache_clear()  # başka testleri kirletme
+
+
+# --- close_data_load_success: tablo adı allowlist'ten, değerler bind-param ---
+class _FakeConn:
+    """execute() çağrılarını kaydeder; SQL metni ve parametreleri denetlenebilsin."""
+
+    def __init__(self, calls):
+        self.calls = calls
+
+    def execute(self, statement, params=None):
+        self.calls.append((str(statement), params))
+        return self
+
+    def one(self):
+        return type("Row", (), {"lo": "2026-06-01", "hi": "2026-06-30"})()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _FakeEngine:
+    def __init__(self):
+        self.calls = []
+
+    def begin(self):
+        return _FakeConn(self.calls)
+
+
+class _FakeReport:
+    rows_read = 10
+    rows_inserted = 8
+    rows_skipped = 2
+    warnings: list[str] = []
+
+
+@pytest.mark.parametrize(
+    "table,time_col", [("ride", "start_time"), ("fleet_status_event", "created_on")]
+)
+def test_close_data_load_success_dogru_zaman_kolonu(table, time_col):
+    engine = _FakeEngine()
+    close_data_load_success(engine, 7, _FakeReport(), table=table)
+    period_sql, period_params = engine.calls[0]
+    assert f"FROM {table} " in period_sql
+    assert f"min({time_col})" in period_sql
+    assert period_params == {"id": 7}  # değer bind-param
+
+
+def test_close_data_load_success_bilinmeyen_tabloyu_reddeder():
+    """Identifier bind EDİLEMEZ; allowlist dışı ad SQL'e interpolate edilmemeli."""
+    with pytest.raises(KeyError):
+        close_data_load_success(_FakeEngine(), 1, _FakeReport(), table="ride; DROP TABLE ride")
+
+
+def test_close_data_load_success_eksik_rows_flagged_sifir_yazar():
+    """Durum defteri raporunda rows_flagged alanı yok — 0 yazılmalı, patlamamalı."""
+    engine = _FakeEngine()
+    close_data_load_success(engine, 3, _FakeReport(), table="fleet_status_event")
+    _, update_params = engine.calls[1]
+    assert update_params["flag"] == 0
+
+
+# --- Mimari sözleşme: Protocol ile implementasyon ayrışmasın ---------------
+# Protocol'ler hiçbir yerde type-hint olarak kullanılmıyordu; bir metot yeniden
+# adlandırılsa arayüz sessizce yanlış şeyi belgelemeye devam ederdi.
+from binbin.data.postgres_repo import PostgresRideRepository  # noqa: E402
+from binbin.data.repository import (  # noqa: E402
+    RideCommandRepository,
+    RideQueryRepository,
+    RideRepository,
+)
+
+
+@pytest.mark.parametrize(
+    "protocol", [RideQueryRepository, RideCommandRepository, RideRepository]
+)
+def test_postgres_repo_protokolu_karsilar(protocol):
+    assert issubclass(PostgresRideRepository, protocol), (
+        f"{protocol.__name__} sözleşmesindeki metotlardan biri "
+        "PostgresRideRepository'de yok veya adı değişmiş."
+    )
+
+
+def test_protokol_eksik_metotu_yakalar():
+    """Kontrolün gerçekten bir şey ölçtüğünü kanıtlar (tautolojik test değil)."""
+
+    class Eksik:
+        def resolve_scope(self, scope):
+            ...
+
+    assert not issubclass(Eksik, RideQueryRepository)
+
+
+def test_komutlar_somut_repoyu_dogrudan_kurmaz():
+    """DIP kilidi: veri kaynağı YALNIZ `_repository()` composition root'unda seçilir.
+
+    Komutlar `PostgresRideRepository`'yi kendi içinde kurarsa kaynağı değiştirmek
+    dört yeri birden düzeltmeyi gerektirir ve Protocol yalnız süs olur.
+    """
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse(Path("src/binbin/cli/main.py").read_text(encoding="utf-8"))
+    users = {
+        fn.name
+        for fn in ast.walk(tree)
+        if isinstance(fn, ast.FunctionDef)
+        and any(
+            isinstance(n, ast.Name) and n.id == "PostgresRideRepository"
+            or isinstance(n, ast.alias) and n.name == "PostgresRideRepository"
+            for n in ast.walk(fn)
+        )
+    }
+    assert users == {"_repository"}, f"Somut repoyu kuran fonksiyonlar: {sorted(users)}"

@@ -1,29 +1,20 @@
-"""Projenin CLI (Command Line Interface) giriş noktası — Imperative Shell.
+"""CLI giriş noktası — imperative shell. İş mantığı yok; argparse ile komutu yakalar,
+alttaki modüllere paslar.
 
-Burada iş mantığı (core logic) bulunmaz; sadece terminalden gelen komutları 
-argparse ile yakalar, ilgili argümanları parse eder ve alttaki modüllere paslarız.
-
-Kullanım örnekleri (PYTHONPATH=src klasöründe):
-    python -m binbin.cli ingest   [--data-dir data_raw] [--country ...] [--city ...] [--all]
-    python -m binbin.cli classify [--batch-size 10000]  [--country ...] [--city ...] [--all]
-    python -m binbin.cli assess   [--country ...] [--city ...] [--all]
-    python -m binbin.cli classify [--refresh] ...
+    python -m binbin.cli ingest   [--data-dir data_raw] [--file F] [kapsam]
+    python -m binbin.cli classify [--refresh] [--batch-size 10000] [kapsam]
+    python -m binbin.cli assess   [--refresh] [kapsam]
     python -m binbin.cli analyze  [--detay] [--derin] [--false-fault] [--sinyal-denetimi]
-                                  [--charts DIR] [--wi-duration SN --wi-distance M]
+                                  [--esik-taramasi] [--charts DIR]
+                                  [--wi-duration SN --wi-distance M]
 
-`ingest`, data_dir'deki CSV'lerin türünü (sürüş / araç durum-değişim defteri)
-başlık satırından otomatik ayırır ve her türü kendi transformer'ına yönlendirir
-(`--file` verilirse yalnız o dosya). Bkz. `binbin.data.ingest.detect_csv_kind`.
+`ingest` CSV türünü başlık satırından ayırıp her türü kendi transformer'ına yönlendirir
+(bkz. `data.ingest.detect_csv_kind`); `--file` verilirse yalnız o dosya yüklenir.
+`analyze` Mevcut Kural'ı daima hesaplar; --wi-duration/--wi-distance BİRLİKTE verilirse
+Özel Kural senaryosu ve geçiş karşılaştırması eklenir.
 
-`analyze` iki senaryolu çalışır: Mevcut Kural her zaman; --wi-duration/--wi-distance
-BİRLİKTE verilirse ek olarak Özel Kural senaryosu ve aralarındaki geçiş karşılaştırması
-hesaplanır. Motor `core/scenario_analysis` (tek geçiş, streaming timeline).
-
-Scope (Kapsam) Mantığı:
-    Hiçbir bayrak verilmezse   -> config.DEFAULT_SCOPE (Türkiye + İstanbul Avrupa/Anadolu)
-    --country/--city verilirse -> Girilen lokasyonlar çekilir (config'i ezer)
-    --all flag'i verilirse     -> Filtre kalkar, DB'deki tüm data işlenir
-    Not: --all ile lokasyon bayrakları aynı anda kullanılamaz, hata patlatır.
+Kapsam: bayrak yoksa config.DEFAULT_SCOPE · --country/--city config'i ezer · --all filtreyi
+kaldırır. --all ile lokasyon bayrakları birlikte kullanılamaz (hata).
 """
 
 import argparse
@@ -33,12 +24,26 @@ from pathlib import Path
 
 from binbin.config import DEFAULT_SCOPE, UNRESTRICTED_SCOPE, Scope
 from binbin.reporting.format import (
+    GROUP_LABELS as _GROUP_LABELS,
     fmt_threshold as _fmt_thr,
     signed_int as _signed_int,
     tr_dec as _tr_dec,
     tr_int as _tr_int,
     tr_pct as _tr_pct,
 )
+from binbin.data.repository import RideRepository
+
+
+def _repository() -> RideRepository:
+    """Composition root: somut veri kaynağının seçildiği TEK yer.
+
+    Komutlar `RideRepository` soyutlamasına bağlıdır; başka bir kaynağa geçmek yalnız
+    burayı değiştirir (DIP). İçe aktarma gövdede: DB sürücüsü kurulu olmadan da
+    `binbin.cli.main` import edilebilsin (testler bunu kullanır).
+    """
+    from binbin.data.postgres_repo import PostgresRideRepository
+
+    return PostgresRideRepository()
 
 
 def _force_utf8_stdout() -> None:
@@ -215,10 +220,8 @@ def cmd_ingest(args: argparse.Namespace) -> None:
     if not files:
         raise SystemExit("Hata: data_raw/ içinde .csv yok.")
 
-    # SIRA YÜK TAŞIR: rides ÖNCE gelmeli. Sürüş ingest'i vehicle satırlarını plakayla
-    # (external_code) birlikte açar; status ingest'i yalnız hiç sürülmemiş araçları
-    # source_ref ile ekler. Ters sırada o araçlar plakasız oluşur ve rides'ın
-    # ON CONFLICT DO NOTHING'i onları GÜNCELLEMEZ — plaka kalıcı olarak kaybolur.
+    # SIRA YÜK TAŞIR: rides ÖNCE. Sürüş ingest'i vehicle'ı plakayla açar; ters sırada
+    # araçlar plakasız oluşur ve ON CONFLICT DO NOTHING onları güncellemez → plaka kaybolur.
     by_kind: dict[str, list[Path]] = {"rides": [], "status": []}
     for f in files:
         by_kind[detect_csv_kind(f)].append(f)
@@ -231,9 +234,7 @@ def cmd_ingest(args: argparse.Namespace) -> None:
 
 
 def cmd_classify(args: argparse.Namespace) -> None:
-    from binbin.data.postgres_repo import PostgresRideRepository
-
-    repo = PostgresRideRepository()
+    repo = _repository()
     ascope = repo.resolve_scope(_scope_from_args(args))
     result = repo.classify_all(ascope, batch_size=args.batch_size, refresh=args.refresh)
     mode = "tam yeniden sınıflandırma" if args.refresh else "artımlı"
@@ -244,9 +245,7 @@ def cmd_classify(args: argparse.Namespace) -> None:
 
 
 def cmd_assess(args: argparse.Namespace) -> None:
-    from binbin.data.postgres_repo import PostgresRideRepository
-
-    repo = PostgresRideRepository()
+    repo = _repository()
     ascope = repo.resolve_scope(_scope_from_args(args))
     result = repo.assess_all(ascope, refresh=args.refresh)
     mode = "tam yeniden hesap" if args.refresh else "artımlı"
@@ -257,9 +256,7 @@ def cmd_assess(args: argparse.Namespace) -> None:
 
 
 def cmd_loads(args: argparse.Namespace) -> None:
-    from binbin.data.postgres_repo import PostgresRideRepository
-
-    rows = PostgresRideRepository().list_data_loads()
+    rows = _repository().list_data_loads()
     if not rows:
         print("Henüz yükleme yok.")
         return
@@ -292,31 +289,25 @@ def _custom_rule_from_args(args: argparse.Namespace) -> tuple[float, float] | No
 
 
 def cmd_analyze(args: argparse.Namespace) -> None:
-    from binbin.data.postgres_repo import PostgresRideRepository
     from binbin.core import scenario_analysis, threshold_scan
 
     custom_thr = _custom_rule_from_args(args)
-    repo = PostgresRideRepository()
+    repo = _repository()
     ascope = repo.resolve_scope(_scope_from_args(args))
 
-    # Bilinçli takas: analyze her çağrıda tüm timeline'ı (BASARILI+BASARISIZ_HARD)
-    # STREAM eder ve agregasyonu Python'da yapar. Neden: iki senaryolu yeniden
-    # sınıflandırma + classify/assess mantığını SQL'de tekrarlamamak için. Bellek
-    # O(satır) değil O(farklı varlık); mevcut aylık ölçekte uygundur. Çok büyük
-    # ölçekte (10M+ satır) sık başlıklar için SQL-tarafı agregasyon yeniden değerlendirilmeli.
-    # Sinyal-join yalnız başarısız OLABİLECEK sürüşlerde çalışsın: sınırı senaryoların
-    # kendi eşiklerinden türetiyoruz, sabit yazmıyoruz (yeni senaryo eklenirse sınır
-    # kendiliğinden genişler). Ölçüm: timeline 37,2 sn → aday guard'ıyla belirgin düşüş.
+    # Bilinçli takas: timeline STREAM edilir, agregasyon Python'da yapılır — classify/assess
+    # mantığı SQL'de tekrarlanmasın diye. Bellek O(varlık), aylık ölçekte uygun; 10M+ satırda
+    # yeniden değerlendir. Sinyal-join sınırı senaryo eşiklerinden türetilir (sabit yazılmaz,
+    # yeni senaryo eklenirse kendiliğinden genişler); ölçüm: timeline 37,2 sn → guard'la düşer.
     scenario_bounds = scenario_analysis.candidate_bounds(
         scenario_analysis.build_scenarios(custom_thr)
     )
     scan_acc = threshold_scan.ThresholdScanAccumulator() if args.esik_taramasi else None
     bounds = scenario_bounds
     if scan_acc is not None:
-        # Eşik taraması ızgarası kendi (süre, mesafe) üst sınırını gerektirir — sinyal-join
-        # bunun dışındaki satırlarda hiç çalışmaz, `assess_ride` field_fault'u NULL görür ve
-        # isabet olduğundan düşük ölçülür. Eleman bazında max: iki bağımsız üst sınırın
-        # BİRLEŞİMİ, ne senaryoların ne taramanın sınırını daraltmaz.
+        # Izgara kendi üst sınırını gerektirir: dışında kalan satırlarda sinyal-join çalışmaz,
+        # field_fault NULL görünür ve isabet düşük ölçülür. Eleman bazında max = iki sınırın
+        # birleşimi; hiçbirini daraltmaz.
         scan_bounds = threshold_scan.grid_bounds()
         bounds = (max(bounds[0], scan_bounds[0]), max(bounds[1], scan_bounds[1]))
     report = scenario_analysis.analyze_scenarios(
@@ -379,11 +370,6 @@ _CAUSE_LABELS = {
     "ODEME": "Ödeme",
     "SISTEM": "Sistem",
     "SINYALSIZ": "Sinyalsiz",
-}
-_GROUP_LABELS = {
-    "ariza_metinli": "Arıza metinli bildirim",
-    "herhangi_bildirimli": "Herhangi bildirim",
-    "bildirimsiz": "Bildirimsiz (kontrol)",
 }
 
 
@@ -588,24 +574,19 @@ def _print_scenario_false_fault(report: dict) -> None:
         )
 
 
+# "(ş)" = şüphesi. Kesin hüküm veremeyiz (ALTIN KURAL) — dar kolonda bile niteleyici düşmez.
 _VERDICT_LABELS = {
-    "GERCEK_ARIZA_SUPHESI": "Gerçek arıza",
-    "SAHTE_ALARM_SUPHESI": "Sahte alarm",
+    "GERCEK_ARIZA_SUPHESI": "Gerçek arıza(ş)",
+    "SAHTE_ALARM_SUPHESI": "Sahte alarm(ş)",
     "BILDIRIM_YOK": "Bildirimsiz",
     "DEGERLENDIRILEMEDI": "Değ.dışı",
 }
 
 
 def _print_signal_audit(rows: list[dict]) -> None:
-    """SİNYAL AYIRT EDİCİLİĞİ — kural kitabının ampirik denetimi.
-
-    Bir kodu `is_fault_signal=true` yapmak "bu olay başarısızlığı açıklar" iddiasıdır.
-    Bu tablo iddiayı ölçer: kod başarısız sürüşlerde başarılılara göre kaç kat sık
-    düşüyor (lift). Saha ekibi bir eşlemeyi `verified=true` yapmadan ÖNCE buraya bakar.
-
-    Karar bu raporda DEĞİL, `fleet_status_reason` tablosunda yaşar — düşük lift bir
-    kodu otomatik elemez (bkz. reason 9 'Batarya bitti': lift düşük ama gerçek saha
-    görevi doğurduğu için iş kararıyla tutuldu).
+    """SİNYAL AYIRT EDİCİLİĞİ — kural kitabının ampirik denetimi: kod başarısız sürüşlerde
+    başarılılara göre kaç kat sık düşüyor (lift). Karar burada değil `fleet_status_reason`da
+    yaşar; düşük lift otomatik elemez (reason 9 'Batarya bitti' iş kararıyla tutuldu).
     """
     from binbin.core.signal_audit import summarize_signal_discrimination
 
@@ -716,16 +697,9 @@ def _print_regulation_matrix(report: dict) -> None:
 
 
 def _print_threshold_scan(scan: dict) -> None:
-    """EŞİK TARAMASI — Özel Kural süre/mesafe ızgarasının F1 ile taranması.
-
-    F1'in payda/paydası eşikten BAĞIMSIZ bir kanıta (metin şikayeti / durum defteri
-    sinyali / 1 yıldız / end_reason) dayanır (bkz. core/threshold_scan modül dokstring'i).
-    Boşa görev sütunu F1'e girmez, yalnız operasyonel etki tahminidir.
-
-    İki karşıt hedef ayrı ayrı basılır (isabet ızgarada sabit kaldığı için "tek doğru
-    nokta" yok, bkz. core/threshold_scan): Senaryo A kaçırılan bağımsız-kanıtlı şikayeti
-    azaltır (gevşetme), Senaryo B işaretlenen hacmi/boşa görevi azaltır (sıkılaştırma) —
-    B, A'nın Mevcut Kural'a göre simetrik aynasıdır, ayrı bir optimizasyon değildir.
+    """EŞİK TARAMASI çıktısı. Metodoloji için bkz. core/threshold_scan modül docstring'i.
+    İki karşıt hedef ayrı basılır: Senaryo A gevşetme (kaçırılan kanıtlı şikayeti azaltır),
+    Senaryo B sıkılaştırma (işaretlenen hacmi azaltır) — B, A'nın simetrik aynasıdır.
     """
     from binbin.core.threshold_scan import BASELINE
 
@@ -756,35 +730,63 @@ def _print_threshold_scan(scan: dict) -> None:
     base, a, b = scan["baseline_row"], scan["recommended"], scan["conservative"]
     _print_threshold_scenario_comparison(base, a, b)
 
+    # İki senaryo simetrik sunulur; çıktı birini önermez.
+    missed_base = _tr_pct(100.0 - base["recall_pct"])
+    missed_a = _tr_pct(100.0 - a["recall_pct"])
+    missed_b = _tr_pct(100.0 - b["recall_pct"])
+
     print(
-        f"\nSenaryo A — İsabet/Kapsam Odaklı (süre<{_fmt_thr(a['duration_threshold'])} sn, "
+        f"\nSenaryo A — Kapsam Önceliği (süre<{_fmt_thr(a['duration_threshold'])} sn, "
         f"mesafe<{_fmt_thr(a['distance_threshold'])} m):"
     )
-    print(f"  + Bağımsız kanıtlı şikayetlerin {_tr_pct(a['recall_pct'])}'ini yakalar "
-          f"(Mevcut Kural {_tr_pct(base['recall_pct'])}).")
-    print(f"  + İsabet hemen hemen aynı kalır ({_tr_pct(a['precision_pct'])}) — eklenen sürüşler gürültü değil.")
-    print(f"  - {_signed_int(a['flagged_delta'])} sürüş ek olarak 'başarısız' damgası alır, "
-          f"{_signed_int(a['wasted_delta'])} boşa görev.")
+    print("  Amaç : incelemeye hiç girmeyen kanıtlı şikayeti azaltmak.")
+    print(f"  Kazanç: kapsam {_tr_pct(base['recall_pct'])} → {_tr_pct(a['recall_pct'])} "
+          f"(gözden kaçan ~{missed_base} → ~{missed_a}); "
+          f"{_signed_int(a['real_fault'] - base['real_fault'])} gerçek arıza şüphesi ilk kez incelenir.")
+    print(f"  Bedel : {_signed_int(a['flagged_delta'])} sürüş 'başarısız' damgası alır, "
+          f"saha yükü {_signed_int(a['wasted_delta'])} boşa görev.")
 
-    missed_base = _tr_pct(100.0 - base["recall_pct"])
-    missed_b = _tr_pct(100.0 - b["recall_pct"])
     print(
-        f"\nSenaryo B — Boşa Görev Azaltma Odaklı (süre<{_fmt_thr(b['duration_threshold'])} sn, "
+        f"\nSenaryo B — Operasyonel Hacim Önceliği (süre<{_fmt_thr(b['duration_threshold'])} sn, "
         f"mesafe<{_fmt_thr(b['distance_threshold'])} m):"
     )
-    print(f"  + İşaretlenen sürüş {_signed_int(b['flagged_delta'])}, boşa görev {_signed_int(b['wasted_delta'])}.")
-    print(f"  - Kapsam {_tr_pct(b['recall_pct'])}'e düşer — bağımsız kanıtlı şikayetlerin "
-          f"~{missed_b} hiç incelenmez (Mevcut Kural'da ~{missed_base}).")
-    print(f"  - İsabet iyileşmiyor ({_tr_pct(b['precision_pct'])}) — azalma 'daha akıllı seçim' değil, "
-          "'daha az bakmak'tan geliyor.")
+    print("  Amaç : işaretlenen hacmi ve saha yükünü azaltmak.")
+    print(f"  Kazanç: işaretlenen sürüş {_signed_int(b['flagged_delta'])}, "
+          f"boşa görev {_signed_int(b['wasted_delta'])} — serbest kalan kapasite "
+          f"gerçek arızalara yönlendirilebilir.")
+    print(f"  Bedel : kapsam {_tr_pct(base['recall_pct'])} → {_tr_pct(b['recall_pct'])} "
+          f"(gözden kaçan ~{missed_base} → ~{missed_b}); "
+          f"{_signed_int(b['real_fault'] - base['real_fault'])} gerçek arıza şüphesi artık incelenmez.")
+
+    # Takas oranı = gerçek arıza şüphesi / şüpheli sahte alarm değişimi. İki senaryo
+    # için AYRI hesaplanır; eşitlik ölçülmeden iddia edilmez (altın kural).
+    def _tradeoff(row: dict) -> float | None:
+        fake = abs(row["suspect_false"] - base["suspect_false"])
+        return abs(row["real_fault"] - base["real_fault"]) / fake if fake else None
+
+    ra, rb = _tradeoff(a), _tradeoff(b)
+    if ra is None and rb is None:
+        ratio_line = "Takas oranı hesaplanamadı (senaryolar Mevcut Kural'dan farklı sürüş getirmiyor)."
+    elif ra is not None and rb is not None and abs(ra - rb) < 0.05:
+        ratio_line = (
+            f"Takas oranı iki yönde de aynı (~{_tr_dec(ra, 1)}): kümeye giren ya da çıkan\n"
+            "her 1 şüpheli sahte alarmın yanında o kadar gerçek arıza şüphesi de gelir/gider."
+        )
+    else:
+        parts = [f"A ~{_tr_dec(ra, 1)}" if ra is not None else "A hesaplanamadı",
+                 f"B ~{_tr_dec(rb, 1)}" if rb is not None else "B hesaplanamadı"]
+        ratio_line = (
+            f"Takas oranı (gerçek arıza şüphesi / şüpheli sahte alarm): {' · '.join(parts)}\n"
+            "— iki yön farklı, senaryolar ayrı değerlendirilmeli."
+        )
 
     print(
         "\nNot: eşik değişikliği gerçek bir sürüşü başarılı/başarısız YAPMAZ; yalnız "
-        "'başarısız' damgasını\ndeğiştirir. Senaryo A'nın kazancı yanlış damgadan doğan "
-        "boşa görevin AZALMASINDAN değil, kaçırılan\nşikayetin azalmasından gelir; "
-        "Senaryo B'nin 'azalması' ise gerçek bir iyileşme değil, daha az\nsürüşün "
-        "incelenmesinden kaynaklanır. Hiçbirinde ciro/TL iddiası yoktur (ops_cost_model "
-        "boş)."
+        "'başarısız'\ndamgasını değiştirir. İsabet ızgarada sabit olduğu için hiçbir "
+        "senaryo teşhisi\niyileştirmez — yalnız neye bakıldığının kapsamını ve hacmini "
+        f"değiştirir.\n{ratio_line}\nHangisinin tercih edileceği bir maliyet dengesi "
+        "sorusudur; ops_cost_model boş olduğu\niçin bu çıktı bir eşik ÖNERMEZ, "
+        "seçeneklerin etkisini ölçer. Ciro/TL iddiası yoktur."
     )
 
 

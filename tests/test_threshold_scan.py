@@ -199,3 +199,79 @@ def test_scan_deltas_are_relative_to_baseline():
     )
     assert widest["flagged"] >= baseline["flagged"]
     assert widest["flagged_delta"] >= 0
+
+
+# --- CLI çıktısı: "Takas oranı" bir SAYI İDDİASIDIR ------------------------
+# "iki yönde de aynı" demek iki oranın gerçekten eşit olduğunu ölçmeyi gerektirir
+# (altın kural: rakam/anlam uydurulmaz). Hesap CLI'da yapıldığı için core testleri
+# bunu kapsamıyordu.
+from binbin.cli.main import _print_threshold_scan  # noqa: E402
+
+
+
+def _cli_row(**over) -> dict:
+    row = {
+        "duration_threshold": 120.0,
+        "distance_threshold": 60.0,
+        "is_baseline": False,
+        "flagged": 1000,
+        "precision_pct": 20.0,
+        "recall_pct": 50.0,
+        "f1_pct": 28.6,
+        "wasted_missions": 300,
+        "suspect_false": 100,
+        "real_fault": 50,
+        "flagged_delta": 0,
+        "wasted_delta": 0,
+    }
+    row.update(over)
+    return row
+
+
+def _cli_scan(a: dict, b: dict, base: dict) -> dict:
+    return {
+        "pool_bounds": {"duration": 150.0, "distance": 80.0},
+        "pool_size": 5000,
+        "reported_in_pool": 900,
+        "rows": [base, a, b],
+        "baseline_row": base,
+        "recommended": a,
+        "conservative": b,
+    }
+
+
+def test_takas_orani_esitse_ayni_denir(capsys):
+    base = _cli_row(is_baseline=True, suspect_false=100, real_fault=50)
+    a = _cli_row(duration_threshold=150.0, suspect_false=120, real_fault=90)   # 40/20 = 2,0
+    b = _cli_row(duration_threshold=90.0, suspect_false=80, real_fault=10)     # 40/20 = 2,0
+    _print_threshold_scan(_cli_scan(a, b, base))
+    out = capsys.readouterr().out
+    assert "Takas oranı iki yönde de aynı (~2,0)" in out
+
+
+def test_takas_orani_farkliysa_ayri_basilir(capsys):
+    """Regresyon kilidi: farklı oranlar ortalanıp 'aynı' diye SUNULMAMALI."""
+    base = _cli_row(is_baseline=True, suspect_false=100, real_fault=50)
+    a = _cli_row(duration_threshold=150.0, suspect_false=120, real_fault=90)   # 40/20 = 2,0
+    b = _cli_row(duration_threshold=90.0, suspect_false=90, real_fault=45)     # 5/10 = 0,5
+    _print_threshold_scan(_cli_scan(a, b, base))
+    out = capsys.readouterr().out
+    assert "iki yönde de aynı" not in out
+    assert "A ~2,0" in out and "B ~0,5" in out
+
+
+def test_sifir_paydada_hesaplanamadi_denir(capsys):
+    """Senaryolar baseline ile aynı şüpheli sahte alarm sayısını veriyorsa bölme yok."""
+    base = _cli_row(is_baseline=True, suspect_false=100, real_fault=50)
+    a = _cli_row(duration_threshold=150.0, suspect_false=100, real_fault=70)
+    b = _cli_row(duration_threshold=90.0, suspect_false=100, real_fault=30)
+    _print_threshold_scan(_cli_scan(a, b, base))
+    assert "Takas oranı hesaplanamadı" in capsys.readouterr().out
+
+
+def test_cikti_tl_iddiasi_icermez(capsys):
+    """ops_cost_model boş — çıktı para birimi cinsinden bir sonuç ÖNERMEZ."""
+    base = _cli_row(is_baseline=True)
+    _print_threshold_scan(_cli_scan(_cli_row(), _cli_row(), base))
+    out = capsys.readouterr().out
+    assert " TL" not in out and "₺" not in out
