@@ -21,9 +21,9 @@ from matplotlib.ticker import FuncFormatter  # noqa: E402
 
 from binbin.reporting.format import tr_dec as _tr_dec  # noqa: E402
 from binbin.reporting.format import tr_int as _tr_int  # noqa: E402
+from binbin.reporting.format import GROUP_LABELS as _GROUP_LABELS  # noqa: E402
 from binbin.reporting.format import tr_pct as _tr_pct  # noqa: E402
 
-# --- Palet (dataviz doğrulanmış referans, light) ---------------------------
 SURFACE = "#fcfcfb"
 INK = "#0b0b0b"       # primary metin
 INK2 = "#52514e"      # secondary metin (değer etiketleri, alt başlık)
@@ -32,15 +32,8 @@ GRID = "#e1e0d9"      # hairline ızgara
 BASELINE = "#c3c2b7"  # spine
 BLUE = "#2a78d6"      # kategorik slot-1 (ana ölçü hue'su)
 BLUE_LIGHT = "#86b6ef"  # vurgu-dışı (de-emphasize)
-AQUA = "#1baf7a"      # kategorik slot-2 (ikinci seri)
+AQUA = "#189c6d"      # kategorik slot-2; beyaz etiket kontrastı için koyulaştırıldı (3,49:1)
 ORANGE = "#d97706"    # kategorik slot-3 (yalnız özel eşik)
-
-# --- Ham anahtar → Türkçe okunur etiket (sunum katmanı) --------------------
-_GROUP_LABELS = {
-    "ariza_metinli": "Arıza metinli bildirim",
-    "herhangi_bildirimli": "Herhangi bildirim",
-    "bildirimsiz": "Bildirimsiz (kontrol grubu)",
-}
 
 
 def _apply_style() -> None:
@@ -67,7 +60,6 @@ def _apply_style() -> None:
 _apply_style()
 
 
-# --- Ortak eksen/başlık yardımcıları ---------------------------------------
 def _new_fig(width: float, height: float):
     fig, ax = plt.subplots(figsize=(width, height), layout="constrained")
     return fig, ax
@@ -99,8 +91,6 @@ def _save(fig, out_dir: Path, name: str) -> Path:
     return path
 
 
-# ---------------------------------------------------------------------------
-# İki senaryolu karşılaştırma grafikleri
 _SCENARIO_COLORS = [BLUE, AQUA]
 _TOP_N = 15  # sıcak nokta grafiklerinde gösterilecek azami çubuk sayısı
 # Saatlik grafikte bu kütlenin altındaki şehir-saat kovaları çizilmez (ör. İGA gibi çok
@@ -111,6 +101,23 @@ MIN_HOURLY_BUCKET_RIDES = 200
 
 def _scenarios(report: dict) -> list[dict]:
     return [report["scenarios"][key] for key in report["scenario_order"]]
+
+
+_GROUP_SPAN = 0.75  # bir kategori yuvasının çubuklara ayrılan payı (kalanı boşluk)
+
+
+def _grouped_bars(ticks: list[int], scenario_count: int) -> tuple[float, list[list[float]]]:
+    """Gruplu çubuk genişliği + senaryo başına merkez konumları.
+
+    Beş grafik bu formülü ayrı ayrı yazıyordu; `_GROUP_SPAN` bir yerde değişince
+    diğerlerinin sessizce sapması an meselesiydi.
+    """
+    size = _GROUP_SPAN / scenario_count
+    offsets = [
+        [tick - _GROUP_SPAN / 2 + size / 2 + idx * size for tick in ticks]
+        for idx in range(scenario_count)
+    ]
+    return size, offsets
 
 
 def _empty_chart(title: str, subtitle: str, out_dir: Path, name: str) -> Path:
@@ -211,10 +218,10 @@ def chart_scenario_causes(report: dict, out_dir: Path) -> Path:
         reported_by_scenario.append(row["reported"] if row else 0)
     ordered = sorted(keys, key=lambda key: max(v.get(key, 0) for v in values), reverse=True)
     x = list(range(len(ordered)))
-    width = 0.75 / len(scenarios)
+    width, offsets = _grouped_bars(x, len(scenarios))
     fig, ax = _new_fig(10, 5.8)
     for idx, (scenario, mapping) in enumerate(zip(scenarios, values)):
-        positions = [v - 0.375 + width / 2 + idx * width for v in x]
+        positions = offsets[idx]
         counts = [mapping.get(key, 0) for key in ordered]
         reported = reported_by_scenario[idx]
         no_report = [c - reported if key == "SİNYALSİZ" else c for key, c in zip(ordered, counts)]
@@ -243,13 +250,12 @@ def chart_scenario_control(report: dict, out_dir: Path) -> Path:
     group_keys = ["ariza_metinli", "herhangi_bildirimli", "bildirimsiz"]
     labels = [_GROUP_LABELS[key] for key in group_keys]
     x = list(range(len(labels)))
-    width = 0.75 / len(scenarios)
+    width, offsets = _grouped_bars(x, len(scenarios))
     fig, ax = _new_fig(10, 5.5)
     for idx, scenario in enumerate(scenarios):
         mapping = {g["group"]: g for g in scenario["control"]["groups"]}
         rates = [mapping[key]["healthy_rate_pct"] for key in group_keys]
-        positions = [v - 0.375 + width / 2 + idx * width for v in x]
-        bars = ax.bar(positions, rates, width, color=_SCENARIO_COLORS[idx], label=scenario["label"])
+        bars = ax.bar(offsets[idx], rates, width, color=_SCENARIO_COLORS[idx], label=scenario["label"])
         ax.bar_label(bars, labels=[_tr_pct(rate) for rate in rates], padding=3, fontsize=8, color=INK2)
     ax.set_xticks(x, labels)
     ax.set_ylabel("Sonradan sağlam çıkma oranı (%)")
@@ -268,13 +274,12 @@ def chart_scenario_false_fault(report: dict, out_dir: Path) -> Path:
     keys = ["GECICI_TEKNIK", "REGULASYON"]
     labels = ["Geçici Teknik", "Regülasyon"]
     x = list(range(len(keys)))
-    width = 0.75 / len(scenarios)
+    width, offsets = _grouped_bars(x, len(scenarios))
     fig, ax = _new_fig(9, 5.4)
     for idx, scenario in enumerate(scenarios):
         mapping = {r["key"]: r for r in scenario["false_fault"]["primary"]}
         events = [mapping[key]["events"] for key in keys]
-        positions = [v - 0.375 + width / 2 + idx * width for v in x]
-        bars = ax.bar(positions, events, width, color=_SCENARIO_COLORS[idx], label=scenario["label"])
+        bars = ax.bar(offsets[idx], events, width, color=_SCENARIO_COLORS[idx], label=scenario["label"])
         ax.bar_label(bars, labels=[_tr_int(v) for v in events], padding=3, fontsize=9, color=INK2)
     ax.set_xticks(x, labels)
     ax.set_ylabel("Şüpheli olay sayısı")
@@ -303,12 +308,11 @@ def chart_scenario_vehicles(report: dict, out_dir: Path) -> Path:
         return _empty_chart("Araç Sıcak Noktaları", "Gösterilecek araç yok",
                             out_dir, "scenario_vehicles.png")
     y = list(range(len(selected)))
-    height = 0.75 / len(scenarios)
+    height, offsets = _grouped_bars(y, len(scenarios))
     fig, ax = _new_fig(10, max(5, 0.48 * len(selected) + 2))
     for idx, (scenario, mapping) in enumerate(zip(scenarios, mappings)):
-        positions = [v - 0.375 + height / 2 + idx * height for v in y]
         counts = [mapping.get(key, 0) for key in selected]
-        bars = ax.barh(positions, counts, height, color=_SCENARIO_COLORS[idx], label=scenario["label"])
+        bars = ax.barh(offsets[idx], counts, height, color=_SCENARIO_COLORS[idx], label=scenario["label"])
         ax.bar_label(bars, labels=[_tr_int(v) for v in counts], padding=3, fontsize=8, color=INK2)
     ax.set_yticks(y, [labels[key] for key in selected])
     ax.invert_yaxis()
@@ -338,12 +342,11 @@ def chart_scenario_subregions(report: dict, out_dir: Path) -> Path:
         return _empty_chart("Alt Bölge Sıcak Noktaları", "En az 2.000 sürüşlü bölge yok",
                             out_dir, "scenario_subregions.png")
     y = list(range(len(selected)))
-    height = 0.75 / len(scenarios)
+    height, offsets = _grouped_bars(y, len(scenarios))
     fig, ax = _new_fig(11, max(5, 0.5 * len(selected) + 2))
     for idx, (scenario, mapping) in enumerate(zip(scenarios, mappings)):
-        positions = [v - 0.375 + height / 2 + idx * height for v in y]
         density = [mapping.get(key, {}).get("false_alarm_per_1000", 0) for key in selected]
-        bars = ax.barh(positions, density, height, color=_SCENARIO_COLORS[idx], label=scenario["label"])
+        bars = ax.barh(offsets[idx], density, height, color=_SCENARIO_COLORS[idx], label=scenario["label"])
         ax.bar_label(bars, labels=[_tr_dec(v) for v in density], padding=3, fontsize=8, color=INK2)
     n_by_key = {
         key: next(m[key]["total_rides"] for m in mappings if key in m) for key in selected
@@ -406,19 +409,29 @@ def chart_scenario_hourly(report: dict, out_dir: Path) -> Path:
             out_dir, "scenario_hourly.png",
         )
 
-    ncols = 4
+    # Panel sayısı 4'ten azsa ızgara da daralır. Sabit 4 sütun bırakılırsa (ör. yalnız
+    # 2 şehir çizilebildiğinde) figürün sağ yarısı boş kalıyor ve PNG "kırpılmış" gibi
+    # görünüyordu — genişlik de panel sayısıyla ölçeklenir.
+    ncols = min(4, len(panels))
     nrows = ceil(len(panels) / ncols)
     # layout="constrained" KULLANILMIYOR: fig.text ile eklenen başlık/legend'ı hesaba
     # katmadığı için PNG'nin üstünü kırpıyordu — subplots_adjust ile elle pay ayrılır.
-    fig, axes = plt.subplots(nrows, ncols, figsize=(11, max(5.5, 2.15 * nrows)), sharex=True, sharey=True)
+    fig, axes = plt.subplots(
+        nrows, ncols,
+        figsize=(max(5.5, 2.75 * ncols), max(5.5, 2.15 * nrows)),  # 4 sütunda 11 inç (eski davranış)
+        sharex=True, sharey=True,
+    )
     fig.subplots_adjust(top=0.85, bottom=0.10, hspace=0.55, wspace=0.22)
     axes_flat = list(axes.flat) if len(panels) > 1 else [axes]
+    # Gösterge TÜM panellerden toplanır: yalnız ilk panele bakmak, orada hacim şartına
+    # takılıp başka panelde çizilen senaryoyu göstergeden düşürüyordu.
+    legend_handles: dict[int, object] = {}
     for idx, (city, series_per_scenario) in enumerate(panels):
         ax = axes_flat[idx]
         for scenario_idx, (scenario, rows) in enumerate(zip(scenarios, series_per_scenario)):
             if not rows:
                 continue
-            ax.plot(
+            line, = ax.plot(
                 [r["hour"] for r in rows],
                 [r["failure_rate_pct"] for r in rows],
                 color=_SCENARIO_COLORS[scenario_idx],
@@ -427,6 +440,7 @@ def chart_scenario_hourly(report: dict, out_dir: Path) -> Path:
                 linewidth=1.3,
                 label=scenario["label"],
             )
+            legend_handles.setdefault(scenario_idx, line)
         ax.set_title(f"{city} · {_tr_int(city_totals[city])} sürüş", fontsize=8.3, color=INK2, pad=2)
         ax.set_xlim(-0.5, 23.5)
         ax.set_xticks(range(0, 24, 6))
@@ -434,7 +448,9 @@ def chart_scenario_hourly(report: dict, out_dir: Path) -> Path:
     for j in range(len(panels), len(axes_flat)):
         axes_flat[j].set_axis_off()
 
-    handles, plot_labels = axes_flat[0].get_legend_handles_labels()
+    drawn = sorted(legend_handles)
+    handles = [legend_handles[i] for i in drawn]
+    plot_labels = [scenarios[i]["label"] for i in drawn]
     fig.legend(
         handles, plot_labels, loc="upper right", ncol=max(1, len(scenarios)),
         frameon=True, edgecolor=GRID, fontsize=9, bbox_to_anchor=(0.99, 0.985),

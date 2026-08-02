@@ -1,10 +1,14 @@
-"""Türkçe sayı/eşik biçimleyicileri — sunum katmanı ortak yardımcıları.
-
-CLI yazdırıcıları (`cli/main`) ve grafik modülü (`reporting/charts`) aynı biçimi
-paylaşsın diye TEK kaynak. Saf fonksiyonlar; I/O yok. (Bağlama özel etiket sözlükleri
-— ör. grup/kategori adları — bilinçli olarak kendi modüllerinde kalır; onlar biçim
-değil sunum kararıdır.)
+"""CLI (`cli/main`) ve grafiklerin (`reporting/charts`) paylaştığı sunum sabitleri —
+tek kaynak. Saf, I/O yok.
 """
+
+# Hem terminalde hem PNG'de görünür. Kopyalanınca sessizce sapmıştı: bir yerde
+# "(kontrol)", diğerinde "(kontrol grubu)" yazıyordu.
+GROUP_LABELS = {
+    "ariza_metinli": "Arıza metinli bildirim",
+    "herhangi_bildirimli": "Herhangi bildirim",
+    "bildirimsiz": "Bildirimsiz (kontrol grubu)",
+}
 
 
 def tr_int(value) -> str:
