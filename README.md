@@ -1,6 +1,6 @@
 # Binbin — Başarısız Sürüş Analizi + Şüpheli Arıza Alarmı
 
-Paylaşımlı e-skuter sürüşlerinde başarısızlık nedenlerinin analizi ve projenin ana
+Paylaşımlı scooter sürüşlerinde başarısızlık nedenlerinin analizi ve projenin ana
 çıktısı olan **şüpheli (sahte) arıza alarmı** ölçümü. Katmanlı mimari, functional
 core / imperative shell: `cli / reporting → core → data → domain`, veri kaynağı
 Repository deseniyle pluggable (`data/`).
@@ -15,8 +15,10 @@ değil **"ŞÜPHELİ"** — veri kesin hüküm veremez.
 
 ## Kurulum notları
 
-- Sanal ortam ve paketler elle kuruludur (`.venv`): sqlalchemy, psycopg, pandas,
-  matplotlib, python-dotenv, pytest.
+- Sanal ortam elle kurulur (`.venv`); bağımlılıkların tek kaynağı `requirements.txt`:
+  sqlalchemy, psycopg, matplotlib, python-dotenv, pytest. (Pandas KULLANILMAZ — büyük
+  CSV RAM'e alınmaz, `COPY` ile stream edilir.) Proje kurulmaz, `PYTHONPATH=src` ile çalışır.
+- Python komutları daima `.venv` ile: `.\.venv\Scripts\python.exe -m pytest tests -q`.
 - DB şeması `db/01`→`db/07` sırasıyla PostgreSQL'de elle kurulur (aylık partition'lı
   `ride`/`fleet_status_event`, bileşik FK'ler, view'ler, kural kitabı seed'i).
 - `.env.example` → `.env` kopyalayıp `DATABASE_URL`'i doldur.
@@ -122,7 +124,6 @@ db/              # PostgreSQL şeması (elle çalıştırılır)
 ├── 05_post_data_reset_check.sql
 ├── 06_vehicle_status.sql
 ├── 07_signal_rulebook_revision.sql
-└── 08_veri_kalite_bayragi_duzeltme.sql
 ```
 
 Veri kaynağı soyutlaması `repository.py` Protocol'ü ile tanımlanır; tek somut
