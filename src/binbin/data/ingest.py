@@ -484,26 +484,84 @@ def run_ingest(
     file_bytes = csv_path.stat().st_size
 
     if not force:
-        prior = _find_successful_load(engine, csv_path.name)
-        if prior is not None:
-            report = IngestReport(
-                data_load_id=prior.data_load_id,
-                file_name=csv_path.name,
-                status="SKIPPED",
-            )
-            report.warnings.append(
-                f"'{csv_path.name}' zaten yüklü (data_load_id={prior.data_load_id}, "
-                f"{prior.finished_at}). Yeniden yüklemek için --force."
-            )
-            if prior.file_bytes is not None and prior.file_bytes != file_bytes:
-                report.warnings.append(
-                    f"UYARI: dosya boyutu değişmiş ({prior.file_bytes} → {file_bytes}) "
-                    "— içerik güncellenmişse --force kullan."
-                )
-            return report
+        skipped = skip_report_if_already_loaded(engine, csv_path, file_bytes, IngestReport)
+        if skipped is not None:
+            return skipped
 
     with _ingest_lock(engine):
         return _run_ingest_locked(engine, csv_path, scope, file_bytes)
+
+
+# Dönem sınırının okunacağı tablo → zaman kolonu. Identifier bind EDİLEMEZ; bu allowlist
+# SQL güvenlik sözleşmesinin gereği (dışarıdan gelen string buraya asla giremez).
+_LOAD_PERIOD_SOURCE = {
+    "ride": "start_time",
+    "fleet_status_event": "created_on",
+}
+
+
+def skip_report_if_already_loaded(engine: Engine, csv_path: Path, file_bytes: int, report_cls):
+    """Dosya daha önce SUCCESS ile yüklendiyse SKIPPED raporu, değilse None.
+
+    İki ingest yolu (sürüş / durum defteri) bunu aynen paylaşır; uyarı metinleri
+    kopyalanınca sessizce ayrışıyordu.
+    """
+    prior = _find_successful_load(engine, csv_path.name)
+    if prior is None:
+        return None
+    report = report_cls(
+        data_load_id=prior.data_load_id,
+        file_name=csv_path.name,
+        status="SKIPPED",
+    )
+    report.warnings.append(
+        f"'{csv_path.name}' zaten yüklü (data_load_id={prior.data_load_id}, "
+        f"{prior.finished_at}). Yeniden yüklemek için --force."
+    )
+    if prior.file_bytes is not None and prior.file_bytes != file_bytes:
+        report.warnings.append(
+            f"UYARI: dosya boyutu değişmiş ({prior.file_bytes} → {file_bytes}) "
+            "— içerik güncellenmişse --force kullan."
+        )
+    return report
+
+
+def close_data_load_success(engine: Engine, data_load_id: int, report, *, table: str) -> None:
+    """data_load'ı SUCCESS'e kapatır; dönem sınırlarını yüklenen tablodan okur."""
+    time_col = _LOAD_PERIOD_SOURCE[table]
+    with engine.begin() as conn:
+        period = conn.execute(
+            text(
+                f"SELECT min({time_col})::date AS lo, max({time_col})::date AS hi "
+                f"FROM {table} WHERE data_load_id = :id"
+            ),
+            {"id": data_load_id},
+        ).one()
+        conn.execute(
+            text(
+                """
+                UPDATE data_load SET
+                    status = 'SUCCESS',
+                    rows_read = :read, rows_inserted = :ins,
+                    rows_skipped = :skip, rows_flagged = :flag,
+                    period_start = :lo, period_end = :hi,
+                    finished_at = now(),
+                    notes = :notes
+                WHERE data_load_id = :id
+                """
+            ),
+            {
+                "read": report.rows_read,
+                "ins": report.rows_inserted,
+                "skip": report.rows_skipped,
+                # Durum defteri raporunda bu alan yok — kalite bayrağı üretmiyor.
+                "flag": getattr(report, "rows_flagged", 0),
+                "lo": period.lo,
+                "hi": period.hi,
+                "notes": "; ".join(report.warnings) or None,
+                "id": data_load_id,
+            },
+        )
 
 
 def _run_ingest_locked(
@@ -517,38 +575,7 @@ def _run_ingest_locked(
         report = transform_staging_to_ride(engine, scope, data_load_id)
         report.file_name = csv_path.name
         report.status = "SUCCESS"
-        with engine.begin() as conn:
-            period = conn.execute(
-                text(
-                    "SELECT min(start_time)::date AS lo, max(start_time)::date AS hi "
-                    "FROM ride WHERE data_load_id = :id"
-                ),
-                {"id": data_load_id},
-            ).one()
-            conn.execute(
-                text(
-                    """
-                    UPDATE data_load SET
-                        status = 'SUCCESS',
-                        rows_read = :read, rows_inserted = :ins,
-                        rows_skipped = :skip, rows_flagged = :flag,
-                        period_start = :lo, period_end = :hi,
-                        finished_at = now(),
-                        notes = :notes
-                    WHERE data_load_id = :id
-                    """
-                ),
-                {
-                    "read": report.rows_read,
-                    "ins": report.rows_inserted,
-                    "skip": report.rows_skipped,
-                    "flag": report.rows_flagged,
-                    "lo": period.lo,
-                    "hi": period.hi,
-                    "notes": "; ".join(report.warnings) or None,
-                    "id": data_load_id,
-                },
-            )
+        close_data_load_success(engine, data_load_id, report, table="ride")
         return report
     except Exception as exc:
         _close_data_load_failed(engine, data_load_id, exc)

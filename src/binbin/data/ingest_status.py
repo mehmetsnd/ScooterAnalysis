@@ -19,11 +19,12 @@ from binbin.data.engine import get_engine
 from binbin.data.ingest import (
     _FLEET_STATUS_EVENT_PARTITION_NAME_RE,
     _close_data_load_failed,
-    _find_successful_load,
     _ingest_lock,
     _open_data_load,
+    close_data_load_success,
     copy_csv_to_staging,
     ensure_month_partitions,
+    skip_report_if_already_loaded,
 )
 
 
@@ -147,23 +148,9 @@ def run_status_ingest(
     file_bytes = csv_path.stat().st_size
 
     if not force:
-        prior = _find_successful_load(engine, csv_path.name)
-        if prior is not None:
-            report = StatusIngestReport(
-                data_load_id=prior.data_load_id,
-                file_name=csv_path.name,
-                status="SKIPPED",
-            )
-            report.warnings.append(
-                f"'{csv_path.name}' zaten yüklü (data_load_id={prior.data_load_id}, "
-                f"{prior.finished_at}). Yeniden yüklemek için --force."
-            )
-            if prior.file_bytes is not None and prior.file_bytes != file_bytes:
-                report.warnings.append(
-                    f"UYARI: dosya boyutu değişmiş ({prior.file_bytes} → {file_bytes}) "
-                    "— içerik güncellenmişse --force kullan."
-                )
-            return report
+        skipped = skip_report_if_already_loaded(engine, csv_path, file_bytes, StatusIngestReport)
+        if skipped is not None:
+            return skipped
 
     with _ingest_lock(engine):
         return _run_status_ingest_locked(engine, csv_path, scope, file_bytes)
@@ -180,37 +167,7 @@ def _run_status_ingest_locked(
         report = transform_staging_to_status_events(engine, scope, data_load_id)
         report.file_name = csv_path.name
         report.status = "SUCCESS"
-        with engine.begin() as conn:
-            period = conn.execute(
-                text(
-                    "SELECT min(created_on)::date AS lo, max(created_on)::date AS hi "
-                    "FROM fleet_status_event WHERE data_load_id = :id"
-                ),
-                {"id": data_load_id},
-            ).one()
-            conn.execute(
-                text(
-                    """
-                    UPDATE data_load SET
-                        status = 'SUCCESS',
-                        rows_read = :read, rows_inserted = :ins,
-                        rows_skipped = :skip, rows_flagged = 0,
-                        period_start = :lo, period_end = :hi,
-                        finished_at = now(),
-                        notes = :notes
-                    WHERE data_load_id = :id
-                    """
-                ),
-                {
-                    "read": report.rows_read,
-                    "ins": report.rows_inserted,
-                    "skip": report.rows_skipped,
-                    "lo": period.lo,
-                    "hi": period.hi,
-                    "notes": "; ".join(report.warnings) or None,
-                    "id": data_load_id,
-                },
-            )
+        close_data_load_success(engine, data_load_id, report, table="fleet_status_event")
         return report
     except Exception as exc:
         _close_data_load_failed(engine, data_load_id, exc)
