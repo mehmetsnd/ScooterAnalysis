@@ -38,4 +38,5 @@ htmlcov/
 .idea/
 .DS_Store
 
-CLAUDE.md 
+CLAUDE.md
+build_report.ps1
