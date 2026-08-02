@@ -16,6 +16,7 @@ from typing import Iterable, Mapping
 
 from binbin.core.classifier import classify_ride
 from binbin.core.false_fault import assess_ride
+from binbin.core.ratios import enum_or_none as _enum_or_none, pct as _pct
 from binbin.core.threshold_scan import ThresholdScanAccumulator
 from binbin.domain.enums import (
     ClassificationSource,
@@ -102,17 +103,12 @@ def build_scenarios(
 
 
 def candidate_bounds(scenarios: tuple[FailureScenario, ...]) -> tuple[float, float]:
-    """Sinyal-join'in çalışması GEREKEN sürüşleri sınırlayan (süre, mesafe) üst sınırı.
-
-    NEDEN: sinyal alanları yalnız BAŞARISIZ sürüşlerde okunur (`analyze_scenarios`
-    içinde `acc["failed"]` bloğu). Başarısız kümesi tüm sürüşlerin ~%6'sı olduğu için
-    sinyali 1M satırın hepsi için hesaplamak boşa iştir — repository katmanı bu sınırı
-    kullanıp LATERAL'i aday olmayan satırlarda hiç çalıştırmaz.
+    """Sinyal-join'in çalışması gereken sürüşleri sınırlayan (süre, mesafe) üst sınırı.
+    Sinyal yalnız başarısızlarda (~%6) okunur; repository bu sınırla LATERAL'i aday
+    olmayan satırlarda hiç çalıştırmaz.
 
     ÜSTKÜME GARANTİSİ: bir sürüş herhangi bir senaryoda başarısızsa ya kaynak-başarısızdır
-    (guard'ın ilk dalı) ya da o senaryonun eşiklerinin ALTINDADIR; eşiklerin MAKSİMUMUNU
-    almak bu kümeyi kapsar. Eşikler senaryolardan türetilir, sabit yazılmaz — yeni bir
-    senaryo eklenirse sınır kendiliğinden genişler.
+    ya da o senaryonun eşiklerinin altındadır — maksimumu almak bu kümeyi kapsar.
     """
     return (
         max(s.duration_threshold for s in scenarios),
@@ -120,18 +116,8 @@ def candidate_bounds(scenarios: tuple[FailureScenario, ...]) -> tuple[float, flo
     )
 
 
-def _pct(part: int, whole: int) -> float:
-    return round(100.0 * part / whole, 1) if whole else 0.0
-
-
 def _outcome_value(value) -> str:
     return value.value if isinstance(value, RideOutcome) else str(value)
-
-
-def _enum_or_none(enum_cls, value):
-    if value is None or isinstance(value, enum_cls):
-        return value
-    return enum_cls(value)
 
 
 def _scenario_ride(row: Mapping, *, prefix: str = "") -> Ride | None:
@@ -311,7 +297,7 @@ def _finalize_scenario(acc: dict, common: dict, cost_rows: list[dict]) -> dict:
     evaluated = acc["failed"] + acc["success"]
     total_failed = acc["failed"]
     categories = [
-        {"category": key, "count": count, "pct": _pct(count, total_failed)}
+        {"category": key, "count": count}
         for key, count in acc["categories"].items()
         if key != "SINYALSIZ"
     ]
@@ -467,10 +453,7 @@ def _finalize_scenario(acc: dict, common: dict, cost_rows: list[dict]) -> dict:
         "cause": {
             "total_failed": total_failed,
             "categories": categories,
-            "signalless": {
-                "count": signalless_count,
-                "pct": _pct(signalless_count, total_failed),
-            },
+            "signalless": {"count": signalless_count},
         },
         "control": {"groups": groups},
         "false_fault": {"primary": primary, "details": details},
@@ -484,7 +467,7 @@ def _finalize_scenario(acc: dict, common: dict, cost_rows: list[dict]) -> dict:
             "rows": technical_rows,
         },
         "vehicle": {"min_failures": MIN_VEHICLE_FAILURES, "vehicles": vehicles},
-        "subregion": {"min_rides": MIN_SUBREGION_RIDES, "sub_regions": sub_regions},
+        "subregion": {"sub_regions": sub_regions},
         "hourly": {"buckets": hourly},
     }
 

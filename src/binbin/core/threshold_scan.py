@@ -1,44 +1,24 @@
-"""Eşik Taraması (threshold-scan) — Özel Kural'ın süre/mesafe eşiklerini tarar.
+"""Eşik Taraması — Özel Kural'ın süre/mesafe eşiklerini F1 ile tarar (saf, DB'siz).
 
-İŞ SORUSU: Mevcut Kural'dan (120 sn / 60 m) çok uzaklaşmadan, başarısızlık kuralını
-bir TEŞHİS ARACI olarak en isabetli yapan eşik çifti hangisi? Eşiği düşürmek/yükseltmek
-gerçek bir sürüşü başarılı ya da başarısız YAPMAZ — yalnız sürüşün "başarısız" DAMGASINI
-değiştirir. Bu yüzden tek dürüst hedef, kuralın eşikten BAĞIMSIZ bir arıza kanıtını
-(`core.false_fault._report_evidence` — metin şikayeti / durum defteri sinyali / 1 yıldız /
-end_reason) ne kadar isabetle yakaladığıdır: F1.
+Eşik değiştirmek sürüşü başarılı/başarısız YAPMAZ, yalnız "başarısız" damgasını değiştirir.
+Bu yüzden hedef, kuralın eşikten BAĞIMSIZ arıza kanıtını (`_report_evidence`: metin /
+durum defteri / 1 yıldız / end_reason) ne kadar isabetle yakaladığıdır.
 
-METODOLOJİ (satır başına BİR KEZ hesaplanır, ızgara hücreleri arasında TEKRAR EDİLMEZ):
-    - `assess_ride` (core.false_fault, KOPYALANMAZ — aynen çağrılır) her satır için
-      `fault_reported` ve `healthy_proof`/`verdict` üretir. Bu değerler eşikten
-      BAĞIMSIZDIR: kanıt kuralı (metin/durum defteri/yıldız) ve "sağlıklı sonraki sürüş"
-      kanıtı (next_distance > 200 m, gap ≤ 360 dk) ızgaradaki hiçbir (süre, mesafe)
-      çiftine göre değişmez. Işgara max mesafesi (80 m) < healthy_proof eşiği (200 m)
-      olduğu için bu ayrım yapısal olarak garantidir — kod bunu ASSERT eder.
-    - Yalnız `flagged = duration < d AND distance < m` ızgara hücresine göre değişir.
+Satır başına BİR KEZ `assess_ride` çağrılır (kopyalanmaz), ızgara hücreleri arasında
+tekrar edilmez: `fault_reported` ve `healthy_proof` eşikten bağımsızdır — ızgara max
+mesafesi (80 m) < healthy_proof eşiği (200 m) olduğu için yapısal garanti, kod ASSERT eder.
+Hücreye göre değişen tek şey `flagged = duration < d AND distance < m`.
 
-METRİKLER (aday havuzu = duration < max(ızgara süre) AND distance < max(ızgara mesafe)):
-    - precision = flagged ∩ reported / flagged  → rule'un işaretlediklerinin ne kadarı
-      bağımsız kanıtla doğrulanıyor.
-    - recall    = flagged ∩ reported / reported_in_pool → havuzdaki bağımsız kanıtlı
-      sürüşlerin ne kadarı yakalanıyor.
-    - f1        = 2·precision·recall / (precision+recall).
-    - suspect_false / wasted_missions: `flagged ∩ SAHTE_ALARM_SUPHESI` — F1'e GİRMEZ,
-      yalnız operasyonel etki tahmini olarak ayrıca raporlanır.
+Metrikler (aday havuzu = ızgara maksimumlarının altındaki sürüşler): precision/recall/f1.
+`suspect_false`/`wasted_missions` F1'e GİRMEZ, ayrı raporlanır. Recall'un paydası yalnız
+havuzdur; havuz dışı sürüşler hiçbir hücrede işaretlenemez — dar bandın yapısal sonucu.
 
-DÜRÜSTLÜK SINIRI: recall'un paydası yalnız aday havuzudur; havuz dışındaki (çok uzun/
-çok hareketli) sürüşler hiçbir ızgara hücresinde işaretlenemez — bu taramanın dar-bant
-kapsamının yapısal bir sonucu, gizlenen bir şey değil.
-
-İKİ SENARYO: isabet (precision) bu ızgarada hemen hemen SABİT kalıyor (~%19,7–%20,4) —
-yani hiçbir yönde "daha akıllı" bir nokta yok, yalnız hacim/kapsam değişiyor. Bu yüzden
-tek bir "optimal" nokta önermek yerine iki karşıt hedefi ayrı ayrı raporluyoruz:
-    - `recommended`    : F1 (dolayısıyla kapsam) en yüksek hücre — "kaçırılan bağımsız
-      kanıtlı şikayeti en aza indir" hedefi.
-    - `conservative`   : `recommended`'ın Mevcut Kural'a göre AYNALANMIŞ (simetrik ters
-      yön, aynı büyüklük) karşılığı — "işaretlenen hacmi/boşa görevi en aza indir" hedefi.
-      Bu nokta ayrı bir optimizasyonla SEÇİLMEDİ (böyle bir optimum yok, çünkü isabet
-      sabit); yalnız "recommended kadar uzaklaş ama ters yöne" ilkesiyle türetildi —
-      ızgara baseline etrafında simetrik olduğundan bu her zaman ızgaranın içinde kalır.
+İKİ SENARYO: precision ızgarada neredeyse sabit (~%19,7–%20,4), yani hiçbir yönde "daha
+akıllı" nokta yok — yalnız hacim/kapsam değişiyor. Tek optimum yerine iki karşıt hedef:
+    recommended  : F1 en yüksek hücre — "kaçırılan kanıtlı şikayeti en aza indir".
+    conservative : recommended'ın baseline'a göre AYNALANMIŞ karşılığı — "işaretlenen
+                   hacmi en aza indir". Ayrı optimizasyonla SEÇİLMEDİ (öyle bir optimum
+                   yok); ızgara baseline etrafında simetrik olduğundan hep içinde kalır.
 """
 
 from __future__ import annotations
@@ -47,6 +27,7 @@ from dataclasses import dataclass
 from typing import Iterable, Mapping, Optional
 
 from binbin.core.false_fault import FALSE_ALARM_WASTED_MISSIONS, assess_ride
+from binbin.core.ratios import enum_or_none as _enum_or_none, pct as _pct
 from binbin.domain.enums import FaultVerdict, RideOutcome
 from binbin.domain.models import Ride
 
@@ -73,20 +54,10 @@ def grid_bounds(
     return (max(duration_grid), max(distance_grid))
 
 
-def _pct(part: float, whole: float) -> float:
-    return round(100.0 * part / whole, 1) if whole else 0.0
-
-
 def _f1(precision_pct: float, recall_pct: float) -> float:
     if precision_pct <= 0 and recall_pct <= 0:
         return 0.0
     return round(2 * precision_pct * recall_pct / (precision_pct + recall_pct), 1)
-
-
-def _enum_or_none(enum_cls, value):
-    if value is None or isinstance(value, enum_cls):
-        return value
-    return enum_cls(value)
 
 
 def _row_ride(row: Mapping) -> Ride:
