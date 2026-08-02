@@ -3,7 +3,7 @@ değişse core değişmez. `analysis_timeline` sürüşleri STREAM eder, iki sen
 saf core fonksiyonları yeniden kullanılarak Python'da yapılır (SQL'de tekrarlanmaz).
 
 Protocol'ler `runtime_checkable`: `PostgresRideRepository`'nin sözleşmeye uyduğu
-`test_repository_protocol.py`'de isinstance ile KONTROL EDİLİR. Aksi hâlde arayüz ile
+`test_backend_hardening.py`'de KONTROL EDİLİR. Aksi hâlde arayüz ile
 implementasyon sessizce ayrışır (bir metot yeniden adlandırılır, Protocol eski adı
 belgelemeye devam eder) — bu dosya yalnız dokümantasyon olur.
 """
