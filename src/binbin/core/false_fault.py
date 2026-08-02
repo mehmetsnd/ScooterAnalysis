@@ -1,19 +1,13 @@
-"""Sahte Arıza (False Fault) Değerlendirme Algoritması — Functional Core (Pure, DB I/O yok).
+"""Şüpheli Arıza Değerlendirmesi — saf çekirdek, I/O yok.
 
-İŞ PROBLEMİ: Müşteri cihaz için yersiz yere "arızalı" derse operasyona 3 boşa görev yazar:
-(1) Sahadan toplama (Pickup)
-(2) Atölye kontrolü (Workshop)
-(3) Sahaya geri bırakma (Redeploy)
-Amaç: Sahte alarmları tespit edip operasyonel zararı ölçmek ve minimize etmek.
+Yersiz "arızalı" bildirimi 3 boşa görev doğurur (toplama → atölye → geri bırakma).
+Adlandırma: geofence/koordinat verisi olmadığı için "SAHTE" değil "ŞÜPHELİ" denir.
 
-ÖNEMLİ (Adlandırma): Olaylara "SAHTE" değil "ŞÜPHELİ" diyoruz. Çünkü elimizde geofence 
-veya koordinat verisi tam yok, kesin yargı dağıtamayız.
-
-Değerlendirme (Verdict) Önceliği:
-    next_ride (sonraki sürüş) yoksa -> DEGERLENDIRILEMEDI (Yeterli data yok)
-    şikayet/bildirim yoksa          -> BILDIRIM_YOK (Bizim kontrol/baseline grubumuz)
-    bildirim var + alet sağlamsa    -> SAHTE_ALARM_SUPHESI (Müşteri yalan söylemiş/yanılmış)
-    bildirim var + alet bozuksa     -> GERCEK_ARIZA_SUPHESI (Müşteri haklı)
+Verdict önceliği:
+    next_ride yok                -> DEGERLENDIRILEMEDI
+    bildirim yok                 -> BILDIRIM_YOK (kontrol grubu)
+    bildirim var + cihaz sağlam  -> SAHTE_ALARM_SUPHESI
+    bildirim var + cihaz bozuk   -> GERCEK_ARIZA_SUPHESI
 """
 
 from dataclasses import dataclass
@@ -99,16 +93,12 @@ def assess_ride(
     healthy_min_distance_m: float = 200.0,
     healthy_max_gap_min: float = 360.0,
 ) -> FaultAssessment:
-    """Arızalı denilen bir sürüşün sahte mi yoksa gerçek mi olduğunu hesaplar.
+    """Arıza bildirimli bir sürüşün şüpheli sahte mi gerçek mi olduğunu hesaplar.
 
-    Bunu anlamak için AYNI aracın bir sonraki sürüşüne (`next_ride`) bakarız: kısa
-    süre içinde (≤360 dk) anlamlı mesafe (>200 m) gidebilmişse, bu healthy_proof=True
-    sayılır. Kullanıcının aynı/farklı olduğu veya arada bakım yapıldığı kontrol
-    edilmez — healthy_proof yalnız "araç bir sonraki kiralamada çalıştı" kanıtıdır.
-
-    Ayrıca `rating` (yıldız) = 1 ise bunu potansiyel arıza şikayeti sayarız.
-    `field_fault`: araç durum-değişim defterinde bu sürüşün penceresinde açık bir
-    teknik arıza sinyali varsa True (bkz. `_report_evidence`).
+    Kanıt aynı aracın sonraki sürüşüdür: ≤360 dk içinde >200 m gidebilmişse
+    healthy_proof=True — yalnız "araç sonraki kiralamada çalıştı" demektir (kullanıcı
+    aynı mı, arada bakım var mı KONTROL EDİLMEZ). rating=1 potansiyel şikayet sayılır;
+    `field_fault` durum defterindeki açık teknik sinyaldir.
     """
     report_evidence = _report_evidence(ride, comment_text, rating, field_fault)
     fault_reported = report_evidence is not ClassificationSource.NONE

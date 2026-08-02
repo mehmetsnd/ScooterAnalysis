@@ -1,34 +1,21 @@
-"""Sinyal ayırt ediciliği (lift) — SAF çekirdek, I/O yok.
+"""Sinyal ayırt ediciliği (lift) — saf çekirdek, I/O yok.
 
-NEDEN VAR: kural kitabındaki (`fleet_status_reason`) bir kodun `is_fault_signal=true`
-yapılması bir İDDİADIR: "bu olay başarısızlığı açıklar". Bu iddia ölçülebilir —
-kod, başarısız sürüşlerin penceresinde başarılı sürüşlere göre ne kadar sık düşüyor?
+Bir kodu `is_fault_signal=true` yapmak "bu olay başarısızlığı açıklar" İDDİASIDIR ve
+ölçülebilir: lift = P(kod|başarısız) / P(kod|başarılı). lift ≈ 1 → gürültü.
+Ölçümle `Batarya az` 0,8x çıkıp elendi (db/07_signal_rulebook_revision.sql).
 
-    lift = P(kod | başarısız) / P(kod | başarılı)
-
-    lift ≈ 1  → kod başarısızlığı AÇIKLAMIYOR, gürültü.
-    lift >> 1 → kod gerçekten başarısızlıkla ilişkili.
-
-Bu ölçüm bir kez gerçek veride koşulduğunda `Batarya az` kodunun lift'inin 0,8x olduğu
-(yani başarılı sürüşlerde DAHA SIK düştüğü) görüldü ve kural kitabından çıkarıldı —
-bkz. db/07_signal_rulebook_revision.sql.
-
-ALTIN KURAL bağlantısı: düşük lift tek başına "bu kod arıza değil" demez, "bu kod
-sürüşün başarısızlığını açıklamıyor" der. İş gerekçesi (ör. batarya bitmesi gerçek bir
-saha görevi doğurur) ölçümü geçersiz kılabilir; o yüzden bu modül KARAR VERMEZ, yalnız
-sayıyı üretir. Karar `fleet_status_reason` tablosunda, gerekçesiyle birlikte yaşar.
+Düşük lift "bu kod arıza değil" demez, "bu sürüşün başarısızlığını açıklamıyor" der;
+iş gerekçesi ölçümü geçersiz kılabilir. Bu modül KARAR VERMEZ, sayı üretir — karar
+gerekçesiyle `fleet_status_reason`'da yaşar.
 """
 
 from typing import Iterable
 
-# Bu eşiğin altındaki kodlar raporda "ayırt etmiyor" diye işaretlenir. Kesin bir
-# istatistik testi değil, gözle tarama için pratik bir sınır.
+# Altındakiler "ayırt etmiyor" işaretlenir. İstatistik testi değil, pratik sınır.
 WEAK_LIFT_THRESHOLD = 2.0
 
-# Lift, küçük hacimde ANLAMSIZDIR: 2 başarısız sürüşte görülüp hiç başarılıda
-# görülmeyen bir kodun lift'i sonsuzdur ama hiçbir şey kanıtlamaz. Bu eşiğin
-# altındaki kodlar `low_volume` işaretlenir ve rapor onları "aday" diye ÖNERMEZ —
-# aksi hâlde denetim raporu, gürültüyü sinyale terfi ettirmeye teşvik ederdi.
+# Lift küçük hacimde anlamsızdır (2 sürüşte görülen kodun lift'i sonsuz olabilir).
+# Altındakiler low_volume işaretlenir ve aday olarak ÖNERİLMEZ.
 MIN_AUDIT_VOLUME = 50
 
 

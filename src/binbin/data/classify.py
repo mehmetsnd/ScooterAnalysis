@@ -19,15 +19,10 @@ from binbin.domain.models import Ride
 def _reset_classification(engine: Engine, clause: str, sparams: dict) -> int:
     """Kapsamdaki başarısız sürüşlerin sınıflandırma damgalarını temizler (refresh yolu).
 
-    `classification_source` NOT NULL'dur ve `ck_category_needs_source` kısıtı "kategori
-    doluysa kaynak NONE olamaz" der; kategoriyle birlikte kaynağı 'NONE'a çekmek bu
-    kısıtı sağlar. Etkilenen satır sayısını döner.
-
-    KASITLI ASİMETRİ: reset OUT_OF_CONTENT sürüşleri de KAPSAR, ama aşağıdaki SELECT
-    onları dışlar. Böylece eski sürümde yanlışlıkla sınıflandırılmış OOC satırları
-    temizlenir ve bir daha kategori almazlar — kalıcı tablo `analysis_timeline`'ın
-    gördüğü kümeye yakınsar. Guard (`classified_at IS NOT NULL OR ...`) sayesinde
-    tekrar çalıştırmak no-op'tur.
+    Kaynağı 'NONE'a çekmek `ck_category_needs_source` kısıtını sağlar. KASITLI ASİMETRİ:
+    reset OUT_OF_CONTENT satırları da kapsar, ama aşağıdaki SELECT onları dışlar — eski
+    sürümde yanlışlıkla sınıflanmış OOC satırları temizlenir, bir daha kategori almaz.
+    Guard sayesinde tekrar çalıştırmak no-op. Etkilenen satır sayısını döner.
     """
     with engine.begin() as conn:
         result = conn.execute(
@@ -61,19 +56,12 @@ def classify_all(
 ) -> dict:
     """Sınıflandırılmamış başarısız sürüşleri sınıflandırıp geri yazar.
 
-    Yalnızca outcome='BASARISIZ_HARD' AND failure_category IS NULL AND
-    classified_at IS NULL çekilir; sonuç NONE olsa bile classified_at damgalanır
-    (idempotent — tekrar çalışınca aynı satırı işlemez).
+    Yalnız `failure_category IS NULL AND classified_at IS NULL` çekilir; sonuç NONE olsa
+    bile damgalanır (idempotent). refresh=True damgaları önce temizler, sonra aynı artımlı
+    döngüyü çalıştırır — kural değişince kalıcı `ride.failure_category` tazelenir.
 
-    refresh=True: kapsamdaki TÜM başarısız sürüşlerin damgaları önce temizlenir, sonra
-    aynı artımlı döngü çalışır — sınıflandırma kuralı/sinyali değişince (ör. yeni bir
-    veri kaynağı bağlanınca) kalıcı `ride.failure_category` tazelenir. `assess_all`'ın
-    `refresh` bayrağıyla aynı sözleşme.
-
-    NEDEN "önce temizle, sonra normal döngü": guard'ı (classified_at IS NULL) doğrudan
-    WHERE'den kaldırmak SONSUZ DÖNGÜ yaratır — döngü `ORDER BY start_time LIMIT :batch`
-    ile hep aynı ilk N satırı çeker, UPDATE'ten sonra da eşleşmeye devam ederler. Reset
-    bunu yapısal olarak engeller.
+    Guard'ı doğrudan WHERE'den kaldırmak SONSUZ DÖNGÜ yaratır (LIMIT'li döngü hep aynı ilk
+    N satırı çeker, UPDATE sonrası da eşleşirler); reset bunu yapısal olarak engeller.
     """
     clause, sparams = _scope_clause(scope)
     if refresh:

@@ -70,10 +70,8 @@ def test_zayif_esigi_sinirda():
     assert result["weak"] is False
 
 
-# --- Hacim guard'ı: lift küçük sayıda ANLAMSIZDIR --------------------------
-# Gerçek çıktıda 'Son kontrol'/'Bakımda' gibi 1-2 sürüşlük kodlar sırf lift'leri
-# sonsuz çıktı diye "aday olabilir" işaretleniyordu. Rapor gürültüyü sinyale terfi
-# ettirmeye teşvik etmemeli.
+# Regresyon kilidi: 1-2 sürüşlük kodlar ('Son kontrol', 'Bakımda') sırf lift'leri sonsuz
+# çıktı diye "aday" işaretleniyordu — rapor gürültüyü sinyale terfi ettirmemeli.
 def test_dusuk_hacim_isaretlenir():
     (row,) = summarize_signal_discrimination(
         [_row(5, fail_rides=MIN_AUDIT_VOLUME - 1, ok_rides=0, signal=False)]

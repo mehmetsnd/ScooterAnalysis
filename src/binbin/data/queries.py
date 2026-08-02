@@ -47,18 +47,12 @@ def analysis_timeline(
     scope: Optional[AnalysisScope],
     candidate_bounds: Optional[tuple[float, float]] = None,
 ) -> Iterable[dict]:
-    """İki senaryolu analiz için araç/zaman sıralı, stream edilen timeline.
+    """İki senaryolu analiz için araç/zaman sıralı, stream edilen timeline (generator).
+    LEAD alanları kapsam içindeki aynı aracın sonraki sürüşünü gösterir.
 
-    LEAD alanları seçili kapsamın içindeki aynı aracın sonraki sürüşünü gösterir.
-    Sonuç generator olduğu için yüz binlerce satır bellekte biriktirilmez.
-
-    `candidate_bounds` = (azami süre sn, azami mesafe m) — verilirse sinyal-join
-    yalnız BAŞARISIZ OLABİLECEK sürüşler için çalışır (bkz.
-    `engine.field_signal_join_sql`). Değeri `scenario_analysis.candidate_bounds()`
-    üretir; senaryo eşiklerinin maksimumu olduğu için başarısız kümesinin üstkümesidir.
-
-    VERİLMEZSE guard uygulanmaz — yavaş ama DAİMA doğru. Yani bu parametreyi unutmak
-    yanlış sayı değil, yalnız yavaşlık üretir (güvenli varsayılan).
+    `candidate_bounds` = (azami süre sn, azami mesafe m) — verilirse sinyal-join yalnız
+    başarısız olabilecek sürüşlerde çalışır (bkz. `engine.field_signal_join_sql`).
+    Verilmezse guard uygulanmaz: yavaş ama daima doğru (güvenli varsayılan).
     """
     clause, params = _scope_clause(scope)
     if candidate_bounds is not None:
@@ -172,17 +166,11 @@ def signal_discrimination_rows(
 ) -> list[dict]:
     """Kural kitabındaki HER kod için: başarısız/başarılı sürüş penceresinde kaç kez düştü.
 
-    `field_signal_join_sql` yalnız `is_fault_signal=true` kodları seçer; bu sorgu
-    KASITLI olarak 58 kodun TAMAMINI tarar — bir kodun sinyal yapılıp yapılmayacağına
-    karar verebilmek için ADAY kodların da ölçülmesi gerekir (governance).
-
-    Pencere, üretimdeki sinyal-join ile AYNI sözleşmeyi kullanır (sonraki sürüşte
-    kesilir) — yoksa denetim raporu, denetlediği mekanizmadan farklı bir şey ölçer.
-    `next_start` LEAD'i TÜM sürüşler üzerinden alınır (out-of-content dahil), çünkü
-    analizden dışlanan bir sürüş de aracı fiilen meşgul eder.
-
-    Sürüş başına kod başına TEK sayım (DISTINCT) — aynı kod pencerede 5 kez düşse de
-    bu 1 sürüştür; oranların paydası sürüş sayısıdır.
+    Üretimdeki join'in aksine 58 kodun TAMAMINI tarar — aday kodlar ölçülmeden sinyal
+    kararı verilemez. Pencere üretimdeki sinyal-join ile AYNI sözleşmeyi kullanır (yoksa
+    denetim, denetlediğinden farklı bir şey ölçer); `next_start` LEAD'i out-of-content
+    dahil TÜM sürüşlerden alınır, çünkü dışlanan sürüş de aracı meşgul eder.
+    Sürüş × kod başına TEK sayım (DISTINCT); oranların paydası sürüş sayısıdır.
     """
     clause, params = _scope_clause(scope)
     sql = text(

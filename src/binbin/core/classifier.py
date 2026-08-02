@@ -1,33 +1,21 @@
-"""Sürüş Sınıflandırıcı (Classifier v1) — Functional Core (Pure, DB I/O yok).
+"""Sürüş Sınıflandırıcı (v1) — saf çekirdek. Yalnız `outcome == BASARISIZ_HARD`
+sürüşlere kategori atar. Öncelik (ilk uyan kazanır):
 
-Sadece tek bir sürüşe bakar. Ve YALNIZCA `outcome == BASARISIZ_HARD` olan sürüşlere kategori atar.
-
-Eşleşme Önceliği (İlk uyan kazanır):
   1. payment_status dolu & ≠ OK       -> ODEME       (FIELD_SIGNAL)
   2. user_cancelled == True           -> KULLANICI   (FIELD_SIGNAL)
   3. triggered_regulation_id dolu     -> REGULASYON  (FIELD_SIGNAL)
   4. unlock_ack == False              -> TEKNIK      (FIELD_SIGNAL)
   5. connection_lost / motor / bms /
      düşük batarya                    -> TEKNIK      (FIELD_SIGNAL)
-  6. araç durum-değişim defterinden
-     teknik arıza sinyali (field_*)   -> field_category (REASON_CODE)
+  6. durum-defteri arıza sinyali      -> field_category (REASON_CODE)
   7. end_message text -> keywords     -> (TEXT_MESSAGE)
   8. comment_text -> keywords         -> (TEXT_COMMENT)
-  9. Hiçbiri eşleşmezse               -> None (Sinyalsiz)
+  9. eşleşme yok                      -> None (Sinyalsiz)
 
-Not 1: Adım 1-5'teki telemetri dataları elimizdeki mevcut CSV'de yok (NULL).
-Ama kod ileriye dönük (future-proof) ve Null-safe yazıldı.
-
-Not 2: Adım 6, araç durum-değişim defterinden (fleet_status_event +
-fleet_status_reason kural kitabı) gelen açık teknik arıza sinyalidir — repository
-katmanı (`data/queries.py`/`data/classify.py`) sürüşün zaman penceresindeki en
-öncelikli sinyali `field_category`/`field_reason` olarak besler. Belirsiz/davranışsal
-kodlar (ör. "BinBin açık" spontane) kural kitabında NULL bırakıldığı için buraya hiç
-ulaşmaz — ŞÜPHELİ≠SAHTE disiplini SQL tarafında zaten uygulanmıştır.
-
-Not 3 (ALTIN KURAL): Sinyalsiz sürüşlere ASLA kategori uydurmuyoruz. Adım 6 devreye
-girmeden önce başarısızların ~%91,5'i bu kütledeydi. Kalanı `false_fault.py`'da
-davranışsal analizle (hypothesis) çözülür.
+1-5 mevcut CSV'de %100 NULL; kod null-safe ve ileriye dönük. Adım 6'yı data katmanı
+`field_category`/`field_reason` olarak besler; kural kitabında NULL bırakılmış belirsiz
+kodlar buraya hiç ulaşmaz. ALTIN KURAL: sinyalsize kategori UYDURULMAZ — kalanı
+`false_fault.py` davranışsal hipotezle ele alır.
 """
 
 from typing import NamedTuple, Optional

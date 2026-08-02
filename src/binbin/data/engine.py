@@ -1,15 +1,9 @@
-"""Veri katmanı bağlantı/plumbing katmanı — Engine + scope + sorgu yürütücü.
+"""Veri katmanı plumbing'i: tek havuzlu Engine, scope→WHERE derleyici, sorgu yürütücü.
+queries/classify/assess/ingest hepsi bunu paylaşır.
 
-Bu modül, hem sorgu (queries.py) hem yazma (classify.py, assess.py) hem de ETL
-(ingest.py) tarafının paylaştığı düşük seviyeli altyapıdır: tek havuzlu Engine,
-scope→WHERE derleyici ve scope-enjeksiyonlu sorgu yürütücü.
-
-SQL GÜVENLİK SÖZLEŞMESİ (ihlal etme):
-  * DEĞERLER daima bind-parametre (`:param`) ile geçer, asla string'e gömülmez.
-  * IDENTIFIER'lar (tablo/kolon/alias) yalnız SABİT LİTERAL; dışarıdan gelen string
-    interpolate edilmez.
-Sözleşme CLI'da da geçerlidir: kapsam adları (--country/--city) ve dosya adları
-kullanıcı girdisidir; bind-param disiplini onları da kapsar.
+SQL GÜVENLİK SÖZLEŞMESİ (ihlal etme): değerler daima bind-param (`:param`);
+identifier'lar (tablo/kolon/alias) yalnız sabit literal. CLI'dan gelen kapsam ve
+dosya adları da bu disipline tabidir.
 """
 
 import os
@@ -41,11 +35,7 @@ def _database_url() -> str:
 
 @lru_cache(maxsize=1)
 def get_engine() -> Engine:
-    """Süreç başına TEK SQLAlchemy Engine (lru_cache ile tekil).
-
-    Tekil olması CLI için de gerekli: ingest/classify/assess/analyze aynı süreçte
-    ardışık çalıştığında her biri yeni engine kurmaz, bağlantı yeniden kullanılır.
-    """
+    """Süreç başına TEK Engine — aynı süreçte ardışık çalışan komutlar havuzu paylaşır."""
     return create_engine(
         _database_url(),
         pool_pre_ping=DB_POOL_PRE_PING,
@@ -62,50 +52,30 @@ def _as_dicts(result) -> list[dict]:
 _CITY_ALIAS = "ci"
 
 
-# Sinyal-join alias'ı — sabit LİTERAL. `analysis_timeline` (queries.py), `classify_all`
-# (classify.py) ve `assess_all` (assess.py) hepsi ride'a bu alias'la (`r`) referans verir;
-# fonksiyon bu yüzden alias'ı parametrize ETMEZ (istekten gelen string asla akmaz).
+# `r` alias'ı sabit LİTERAL — üç tüketici de ride'a bu adla referans verir, parametrize edilmez.
 def field_signal_join_sql(candidate_guard: Optional[str] = None) -> str:
-    """`fleet_status_event`'ten sürüşe en yüksek öncelikli arıza-sinyalini bağlayan
-    LEFT JOIN LATERAL parçası. `ride r` alias'ının bulunduğu bir FROM'a eklenir.
+    """`fleet_status_event`'ten en yüksek `priority`'li arıza-sinyalini bağlayan LEFT JOIN
+    LATERAL parçası; `ride r` alias'ının bulunduğu bir FROM'a eklenir. analysis_timeline,
+    classify_all ve assess_all AYNI parçayı kullanır (sinyal mantığı tek yerde).
 
-    Pencere sözleşmesi:
-        [ r.start_time , MIN(end_time + FIELD_SIGNAL_WINDOW_POST_MIN dk,
-                             aynı aracın SONRAKİ sürüşünün start_time'ı) )
+    Pencere (yarı açık): [r.start_time, MIN(end_time + FIELD_SIGNAL_WINDOW_POST_MIN dk,
+    aynı aracın SONRAKİ sürüşünün start_time'ı)). Sonraki sürüşte kesme ŞART: kırpma
+    olmadan 6.423 atamanın 1.292'si (%20,1) yanlış sürüşe gidiyordu.
 
-    Bu pencerede `fleet_status_reason.is_fault_signal=true` olan olaylardan `priority`
-    en yüksek olanı seçer (aynı öncelikte en erken olay kazanır). Üç tüketici de (canlı
-    analiz, kalıcı classify, false-fault assess) AYNI parçayı kullanır — sinyal mantığı
-    SQL'de tekrarlanmaz, tek yerde yaşar.
-
-    SONRAKİ SÜRÜŞTE KESME (neden var): araç sürüş bitiminden birkaç dakika sonra tekrar
-    kiralanabiliyor. Kırpma olmadan, o yeni sürüş sırasında düşen arıza olayı ÖNCEKİ
-    sürüşe de atanıyordu — ölçüldü: 6.423 atamanın 1.292'si (%20,1) böyleydi. Bu, var
-    olmayan bir kanıtı kategoriye çevirmek demek (ALTIN KURAL ihlali). Üst sınır artık
-    yarı-açık: olay tam olarak sonraki sürüşün başlangıcında düşerse o sürüşe aittir.
-
-    ADAY GUARD'I: sinyal alanları YALNIZ başarısız (olabilecek) sürüşlerde okunur,
-    ama LATERAL kapsamdaki HER satır için çalışır. 1,03M sürüşün ~%6'sı başarısız
-    olduğundan bu %94 boşa iştir (ölçüldü: sinyal-join'siz sorgu 0,4 sn, sinyal-join'li
-    37 sn). Guard, aday olmayan satırlarda LATERAL'i indeks taramasına hiç girmeden
-    kestirir — koşul yalnız `r` kolonlarına baktığı için satır başına sabit maliyettir.
-
-    candidate_guard=None      : guard yok, TÜM satırlarda çalışır (yavaş, daima doğru).
-    candidate_guard="outcome" : yalnız `r.outcome = 'BASARISIZ_HARD'`. Kullanan sorgu
-        sinyali yalnız o outcome'da okuyorsa bu TAM EŞLEŞMEdir (üstküme değil) — ör.
-        `assess.py` (field_fault yalnız seq.outcome='BASARISIZ_HARD' satırlarında
-        kullanılır). Ölçüldü: LATERAL çağrısı 1.028.402 → ~65.964 (kaynak-başarısız
-        sayısı), assess_all 51,9 sn → bkz. commit notu.
-    candidate_guard="thresholds" : `r.outcome='BASARISIZ_HARD' OR (duration<X AND
-        distance<Y)`. Eşikler `:fsig_max_dur`/`:fsig_max_dist` bind-param'larıyla gelir
-        (SQL güvenlik sözleşmesi), çağıran tarafından `scenario_analysis.
-        candidate_bounds()`'tan türetilir. Kullanan sorgu birden çok senaryo eşiğine
-        göre başarısız sayabiliyorsa (ör. `analyze`) bu ÜSTKÜMEdir, tam eşleşme değil —
-        DB'de doğrulandı: hiçbir aday sürüş sinyalini kaybetmiyor.
+    ADAY GUARD'I — sinyal yalnız başarısız sürüşlerde okunur (1,03M sürüşün ~%6'sı) ama
+    LATERAL her satırda çalışır, yani %94 boşa iş (ölçüldü: join'siz 0,4 sn, join'li 37 sn).
+    Guard yalnız `r` kolonlarına baktığı için satır başına sabit maliyettir:
+      None         : guard yok, tüm satırlar (yavaş, daima doğru).
+      "outcome"    : `r.outcome='BASARISIZ_HARD'`. assess.py field_fault'u yalnız bu
+                     outcome'da okuduğu için TAM EŞLEŞME (üstküme değil). Ölçüldü:
+                     LATERAL 1.028.402 → ~65.964 çağrı, assess_all 51,9 sn.
+      "thresholds" : outcome VEYA (duration<:fsig_max_dur AND distance<:fsig_max_dist);
+                     eşikler `scenario_analysis.candidate_bounds()`'tan bind-param olarak
+                     gelir (SQL güvenlik sözleşmesi). Çok senaryolu `analyze` için
+                     ÜSTKÜMEdir; DB'de doğrulandı: hiçbir aday sinyalini kaybetmiyor.
 
     Döndürdüğü sütunlar: field_signal_reason_id, field_category, field_reason,
-    field_signal_desc (kural kitabındaki insan-okur açıklama; TEKNİK ARIZA KIRILIMI
-    raporu bunu kullanır — core 58 kodu hardcode etmesin diye etiket DB'den akar).
+    field_signal_desc (rapor etiketi DB'den akar; core kod adı bilmez).
     """
     if candidate_guard == "outcome":
         guard = "r.outcome = 'BASARISIZ_HARD' AND "

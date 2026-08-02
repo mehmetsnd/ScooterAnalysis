@@ -9,7 +9,6 @@ bozuk araç kiralayıp parasını kaptıran müşterinin şikayetidir.
 
 import unicodedata
 
-# --- Regülasyon / yasak bölge ---------------------------------------------
 REGULATION_KEYWORDS: frozenset[str] = frozenset(
     {
         # TR
@@ -44,7 +43,6 @@ REGULATION_KEYWORDS: frozenset[str] = frozenset(
     }
 )
 
-# --- Kullanıcı kaynaklı -----------------------------------------------------
 USER_KEYWORDS: frozenset[str] = frozenset(
     {
         # TR
@@ -71,7 +69,6 @@ USER_KEYWORDS: frozenset[str] = frozenset(
     }
 )
 
-# --- Teknik / arıza ---------------------------------------------------------
 # "para iadesi / param gitti" burada: bozuk araç şikâyeti → TEKNIK.
 TECHNICAL_KEYWORDS: frozenset[str] = frozenset(
     {
@@ -131,7 +128,6 @@ TECHNICAL_KEYWORDS: frozenset[str] = frozenset(
     }
 )
 
-# --- Sistem / uygulama ------------------------------------------------------
 SYSTEM_KEYWORDS: frozenset[str] = frozenset(
     {
         # TR
@@ -157,7 +153,6 @@ SYSTEM_KEYWORDS: frozenset[str] = frozenset(
     }
 )
 
-# --- Alt sebep eşlemesi (teknik metinden FailureReason) --------------------
 # Öncelik: kilit → LOCK_JAM, gaz/motor → MOTOR_ERROR, diğer teknik → IOT_FAULT.
 LOCK_KEYWORDS: frozenset[str] = frozenset(
     {"kilit", "kilitli", "acilmadi", "acilmiyor", "unlock", "lock"}

@@ -1,16 +1,7 @@
-"""PostgreSQL repository — Protocol implementasyonu (ince delege katmanı).
-
-Bu sınıf `RideQueryRepository` + `RideCommandRepository` Protocol'lerini karşılar
-ama iş mantığı burada DEĞİLDİR: her metot, kaynağa göre ayrılmış serbest
-fonksiyonlara delege eder:
-  * okuma sorguları      → `queries.py`
-  * sınıflandırma (yaz)  → `classify.py`
-  * değerlendirme (yaz)  → `assess.py`
-  * bağlantı/plumbing    → `engine.py`
-(Tablo tanımları Python'da TUTULMAZ; şemanın tek doğru kaynağı `db/*.sql`.)
-
-Böylece "hangi dosyada hangi fonksiyon" nettir ve tek dosya şişmez. Canlı analiz
-yolu `analysis_timeline` (stream) + `ops_cost_rows`; yazma yolu classify_all/assess_all.
+"""PostgreSQL repository — Protocol implementasyonu, ince delege katmanı. İş mantığı
+burada değil: okuma → `queries.py`, sınıflandırma → `classify.py`, değerlendirme →
+`assess.py`, bağlantı → `engine.py`. Tablo tanımları Python'da TUTULMAZ; şemanın tek
+doğru kaynağı `db/*.sql`.
 """
 
 from typing import Iterable, Optional
@@ -29,7 +20,6 @@ class PostgresRideRepository:
     def __init__(self, engine: Optional[Engine] = None) -> None:
         self.engine = engine if engine is not None else get_engine()
 
-    # ------------------------------------------------------------------ scope
     def resolve_scope(self, scope: Scope) -> AnalysisScope:
         return queries.resolve_scope(self.engine, scope)
 
@@ -40,7 +30,6 @@ class PostgresRideRepository:
     ) -> Iterable[dict]:
         return queries.analysis_timeline(self.engine, scope, candidate_bounds)
 
-    # ------------------------------------------------------- analysis (okuma)
     def ops_cost_rows(self, scope: Optional[AnalysisScope]) -> list[dict]:
         return queries.ops_cost_rows(self.engine, scope)
 
@@ -50,7 +39,6 @@ class PostgresRideRepository:
     def signal_discrimination_rows(self, scope: Optional[AnalysisScope]) -> list[dict]:
         return queries.signal_discrimination_rows(self.engine, scope)
 
-    # ---------------------------------------------------------- classify (yaz)
     def classify_all(
         self,
         scope: Optional[AnalysisScope],
@@ -60,7 +48,6 @@ class PostgresRideRepository:
     ) -> dict:
         return classify.classify_all(self.engine, scope, batch_size, version, refresh)
 
-    # ------------------------------------------------------------ assess (yaz)
     def assess_all(
         self,
         scope: Optional[AnalysisScope],
@@ -69,6 +56,5 @@ class PostgresRideRepository:
     ) -> dict:
         return assess.assess_all(self.engine, scope, version, refresh)
 
-    # -------------------------------------------------------------- data_load
     def list_data_loads(self) -> list[dict]:
         return queries.list_data_loads(self.engine)

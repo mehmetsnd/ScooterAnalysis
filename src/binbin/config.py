@@ -27,30 +27,20 @@ DEFAULT_SCOPE = Scope(
     cities=("İstanbul Avrupa", "İstanbul Anadolu"),
 )
 
-# Kısıtlamasız scope (--all flag'i gelirse bu kullanılır).
 UNRESTRICTED_SCOPE = Scope()
 
-# Classifier/assessor sürüm damgası — algoritma değişince "v2" ile eski veri ayrışır.
+# Algoritma değişince "v2" yapılır; eski veri damgasıyla ayrışır.
 CLASSIFIER_VERSION = "v1"
 ASSESSOR_VERSION = "v1"
 
-# Sinyal-join penceresi (dk): başarısız sürüşe REASON_CODE sinyali beslerken,
-# aracın [start_time, end_time + bu kadar dk] aralığındaki arıza-sinyalli
-# fleet_status_event kayıtlarına bakılır. Sürüş ÖNCESİ olaylar KASITLI dışlanır —
-# geçmiş bir arıza bu sürüşün nedenini açıklamaz, yalnız sürüş sırasında/hemen
-# sonrasında düşen sinyal sayılır. `data/engine.py:field_signal_join_sql` kullanır.
+# Sinyal penceresi: [start_time, end_time + N dk]. Sürüş ÖNCESİ olaylar kasıtlı
+# dışlanır — geçmiş bir arıza bu sürüşü açıklamaz.
 FIELD_SIGNAL_WINDOW_POST_MIN = 10
 
 
-# SQLAlchemy bağlantı ayarları (TEK yerde). CLI tek bağlantıyla çalışır; bu ikisi
-# yine de gerekli çünkü `analyze` uzun sürer ve bağlantı arada ölebilir:
-#   pool_pre_ping : ölü bağlantıyı kullanmadan önce ping'le (kopmuş TCP'yi ele)
-#   pool_recycle  : bu saniyeden eski bağlantıyı yenile (DB idle-timeout'a takılma)
-# (Havuz boyutu ayarları web planı için konmuştu; SQLAlchemy varsayılanlarıyla
-#  birebir aynı oldukları için hiçbir şey yapmıyorlardı → kaldırıldı.)
+# analyze uzun sürer, bağlantı arada ölebilir: ping'le ve eskiyeni yenile.
 DB_POOL_RECYCLE_SEC = 1800
 DB_POOL_PRE_PING = True
 
-# Ingest advisory-lock anahtarı: eşzamanlı iki ingest'in paylaşımlı stg_rental_raw'ı
-# ezmesini engeller (pg_advisory_lock). Sabit, projeye özgü bir sayı.
+# Eşzamanlı iki ingest'in paylaşımlı stg_rental_raw'ı ezmesini engeller.
 INGEST_LOCK_KEY = 918273
