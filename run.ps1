@@ -1,17 +1,55 @@
 # Binbin - Tek seferde tüm pipeline'ı çalıştır
 # Kullanım: proje kökünden  ->  .\run.ps1
 # .venv'i elle aktive etmene gerek yok; script venv python'unu kendi bulur.
+#
+# Kapsam (-All diğer ikisiyle BİRLİKTE verilemez; -City ve -Country
+#         birlikte verilebilir, VE olarak uygulanır):
+#   .\run.ps1                                   -> config.DEFAULT_SCOPE (Türkiye + İstanbul)
+#   .\run.ps1 -All                              -> tüm ülke/şehirler
+#   .\run.ps1 -City "İstanbul Avrupa","Bursa"   -> yalnız bu şehirler
+#   .\run.ps1 -Country "Bosnia and Herzegovina" -> yalnız bu ülke
+# Birden fazla değer VİRGÜLLE verilir (PowerShell dizi söz dizimi); adlar Türkçe
+# karakterleriyle ve TAM eşleşmeli yazılır — yanlış ad artık sessizce boş sonuç
+# üretmez, CLI net hata verir.
 
 param(
     [Nullable[double]]$WiDuration,
     [Nullable[double]]$WiDistance,
+    [string[]]$Country,
+    [string[]]$City,
     [switch]$All
 )
 
+# Eşik sorularından ÖNCE reddet: kullanıcı iki soru cevaplayıp sonra hata almasın.
+if ($All -and ($Country -or $City)) {
+    Write-Host "HATA: -All ile -Country/-City birlikte verilemez." -ForegroundColor Red
+    exit 1
+}
+
+# Her bayrak ve degeri AYRI token olmali. Bayragi ve degeri tek bir string'de
+# birlestirmek argparse'ta tek arguman olur ve "Istanbul Avrupa" gibi bosluklu
+# bir sehir adi ikiye bolunur; bu yuzden daima iki elemanli dizi eklenir.
 $scopeArgs = @()
 if ($All) {
     $scopeArgs = @("--all")
     Write-Host "Kapsam: TUM ULKELER/SEHIRLER (--all)" -ForegroundColor Yellow
+}
+elseif ($Country -or $City) {
+    foreach ($c in $Country) { $scopeArgs += @("--country", $c) }
+    foreach ($c in $City) { $scopeArgs += @("--city", $c) }
+    Write-Host "Kapsam: OZEL" -ForegroundColor Yellow
+    Write-Host "  $($scopeArgs -join ' ')" -ForegroundColor Yellow
+}
+else {
+    Write-Host "Kapsam: VARSAYILAN (config.DEFAULT_SCOPE) - TUM VERI DEGIL." -ForegroundColor Yellow
+    Write-Host "  Tum veri icin -All, secmek icin -City/-Country kullan." -ForegroundColor Yellow
+}
+
+# Durum-degisim defteri (stg_status_raw) ulke/sehir kolonu TASIMAZ; ingest_status
+# kapsami bilincli yok sayar. Kullanici 1. adimin filtrelendigini sanmasin.
+if (-not $All) {
+    Write-Host "NOT: arac durum-degisim CSV'si KAPSAM FILTRESI UYGULAMAZ -" -ForegroundColor Yellow
+    Write-Host "     stg_status_raw'da ulke/sehir adi yok, defter DAIMA FILO GENELINDE yuklenir." -ForegroundColor Yellow
 }
 
 $ErrorActionPreference = "Stop"
