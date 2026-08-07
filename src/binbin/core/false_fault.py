@@ -97,8 +97,23 @@ def assess_ride(
 
     Kanıt aynı aracın sonraki sürüşüdür: ≤360 dk içinde >200 m gidebilmişse
     healthy_proof=True — yalnız "araç sonraki kiralamada çalıştı" demektir (kullanıcı
-    aynı mı, arada bakım var mı KONTROL EDİLMEZ). rating=1 potansiyel şikayet sayılır;
-    `field_fault` durum defterindeki açık teknik sinyaldir.
+    aynı mı, arada bakım var mı KONTROL EDİLMEZ). `field_fault` durum defterindeki
+    açık teknik sinyaldir.
+
+    RATING EŞİĞİ NEDEN 1 (ölçüldü, 2026-08-05): yalnız 1 yıldız kanıt sayılır.
+    Lift ölçümü 2 ve 3 yıldızı ELEDİ — 1★ 5,4x ayırt ederken 2★ 0,4x, 3★ 0,1x
+    çıktı, yani ikisi de başarılı sürüşlerde daha sık. Puan veren başarısız
+    sürüşlerin %95,5'i zaten 1 yıldız veriyor.
+
+    Marjinal etki de küçüktü: 2★'lı 41 başarısız sürüşün 28'inde başka kanıt yoktu,
+    onların da yalnız 7'si yorum yazmıştı. O 7 yorumun yazımları (`kilidi yok`,
+    `cok tekledi`, `lose kocnice`, `sorunlu`…) kelime adayı olarak AYRICA ölçüldü ve
+    hepsi benimseme kuralını GEÇEMEDİ (`kilid` 1,9x · `sorunlu` 0,9x · `tekledi` ve
+    `lose kocnice` hacim yetersiz). Yani bu ifadeler başarılı sürüşlerde de benzer
+    sıklıkta geçiyor; kanıt sayılsalardı yanlış-pozitif üreteceklerdi. Bugün bu 7
+    yorumdan yalnız biri (`wouldnt turn on`) yakalanıyor — geri kalanı bilinçli
+    olarak kanıtsız kalıyor, çünkü ölçüm onları ayırt edici bulmadı. Kalan 21 sessiz
+    2★ ise neden şikayet edildiği hakkında sıfır bilgi taşır.
     """
     report_evidence = _report_evidence(ride, comment_text, rating, field_fault)
     fault_reported = report_evidence is not ClassificationSource.NONE

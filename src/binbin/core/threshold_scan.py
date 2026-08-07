@@ -3,6 +3,9 @@
 Eşik değiştirmek sürüşü başarılı/başarısız YAPMAZ, yalnız "başarısız" damgasını değiştirir.
 Bu yüzden hedef, kuralın eşikten BAĞIMSIZ arıza kanıtını (`_report_evidence`: metin /
 durum defteri / 1 yıldız / end_reason) ne kadar isabetle yakaladığıdır.
+Kanıt tanımının kendisi de ölçülür: yıldız eşiğinin neden 1'de kaldığı `false_fault.
+assess_ride`'da, kelime kümelerinin ayırt ediciliği `core/keyword_audit.py`'de
+(`analyze --kelime-denetimi`) sayılarla kayıtlıdır.
 
 Satır başına BİR KEZ `assess_ride` çağrılır (kopyalanmaz), ızgara hücreleri arasında
 tekrar edilmez: `fault_reported` ve `healthy_proof` eşikten bağımsızdır — ızgara max

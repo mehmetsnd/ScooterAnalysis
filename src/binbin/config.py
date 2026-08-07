@@ -30,8 +30,12 @@ DEFAULT_SCOPE = Scope(
 UNRESTRICTED_SCOPE = Scope()
 
 # Algoritma değişince "v2" yapılır; eski veri damgasıyla ayrışır.
-CLASSIFIER_VERSION = "v1"
-ASSESSOR_VERSION = "v1"
+# v2 (2026-08-05): kelime kural kitabı ölçümle revize edildi — `normalize()` artık
+# kesme işaretini siler, ters-korelasyonlu kelimeler (fren ailesi, kamera, uygulama,
+# 6 km…) elendi, ölçümü geçen yazım varyantları eklendi. Hem sınıflandırma hem
+# kanıt üretimi değiştiği için İKİ damga da yükseldi (bkz. core/keywords.py).
+CLASSIFIER_VERSION = "v3"
+ASSESSOR_VERSION = "v3"
 
 # Sinyal penceresi: [start_time, end_time + N dk]. Sürüş ÖNCESİ olaylar kasıtlı
 # dışlanır — geçmiş bir arıza bu sürüşü açıklamaz.
