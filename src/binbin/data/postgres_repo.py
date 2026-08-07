@@ -39,6 +39,9 @@ class PostgresRideRepository:
     def signal_discrimination_rows(self, scope: Optional[AnalysisScope]) -> list[dict]:
         return queries.signal_discrimination_rows(self.engine, scope)
 
+    def comment_corpus_rows(self, scope: Optional[AnalysisScope]) -> Iterable[dict]:
+        return queries.comment_corpus_rows(self.engine, scope)
+
     def classify_all(
         self,
         scope: Optional[AnalysisScope],

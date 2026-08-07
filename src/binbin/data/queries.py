@@ -8,38 +8,136 @@ Not: Bu modül `PostgresRideRepository` tarafından delege edilerek çağrılır
 doğrudan da kullanılabilir (repo nesnesi olmadan engine ile).
 """
 
+from difflib import get_close_matches
 from typing import Iterable, Optional
 
 from sqlalchemy import Engine, text
 
 from binbin.config import FIELD_SIGNAL_WINDOW_POST_MIN, Scope
 from binbin.data.engine import _as_dicts, _scope_clause, field_signal_join_sql
-from binbin.data.repository import AnalysisScope
+from binbin.data.repository import AnalysisScope, UnknownScopeName
+
+
+def _resolve_scope_names(
+    requested: list[str], rows: list
+) -> tuple[list[int], list[str], list[str]]:
+    """(id'ler, çözülemeyen adlar, analiz-dışı test adları) — SAF, DB'siz.
+
+    Test şehirleri eksiklerden AYRI döner: `Test` bölgesi gerçekten vardır, yalnız
+    analiz dışıdır (`city.is_test`). Onu "yazım hatası" diye raporlamak yanıltıcı
+    olurdu, bu yüzden çağıran ayrı bir mesaj verebilsin diye ayrıştırılır.
+    """
+    # Sehir adlari YALNIZ ulke icinde benzersizdir (db/01: uq_city_name
+    # UNIQUE(country_id, name)). Iki ulkede ayni adli sehir varsa sozluk sessizce
+    # birini secer ve analiz yanlis/yarim veriyle kosardi - tam da bu guard'in
+    # onlemek icin var oldugu hata sinifi. Cakismayi tespit edip HATA veriyoruz.
+    found: dict = {}
+    collisions: list[str] = []
+    for r in rows:
+        if r["name"] in found and r["name"] in requested:
+            collisions.append(r["name"])
+        found[r["name"]] = r
+    if collisions:
+        raise UnknownScopeName(
+            "Hata: " + ", ".join(sorted(set(collisions)))
+            + " adi birden fazla ulkede var; hangisi oldugu belirsiz. "
+            "--country ile birlikte verin."
+        )
+    ids: list[int] = []
+    missing: list[str] = []
+    test_only: list[str] = []
+    for name in requested:
+        row = found.get(name)
+        if row is None:
+            missing.append(name)
+        elif row["is_test"]:
+            test_only.append(name)
+        else:
+            ids.append(int(row["id"]))
+    return ids, missing, test_only
+
+
+def _unknown_scope_message(kind: str, missing: list[str], valid: list[str]) -> str:
+    """Çözülemeyen ad için anlaşılır hata metni — SAF, DB'siz.
+
+    En olası hata Türkçe `İ` yerine ASCII `I` yazmaktır (`Istanbul Avrupa`);
+    `difflib` yakın adı bulup gösterir, kullanıcı farkı gözle göremese bile.
+    """
+    lines = []
+    for name in missing:
+        lines.append(f"Hata: bilinmeyen {kind} adı: {name!r}.")
+        close = get_close_matches(name, valid, n=1, cutoff=0.6)
+        if close:
+            lines.append(f"  Bunu mu demek istediniz: {close[0]!r}?")
+    if valid:
+        lines.append(f"Geçerli {kind} adları: {', '.join(sorted(valid))}")
+    lines.append(f"İpucu: adlar Türkçe karakterleriyle ve TAM eşleşmeli yazılır.")
+    return "\n".join(lines)
+
+
+# Kapsam türü → (tablo, id kolonu, is_test ifadesi). SQL'e giden TEK identifier
+# kaynağı; hepsi sabit literal (SQL güvenlik sözleşmesi).
+# DİKKAT: `is_test` YALNIZ `city` tablosunda vardır (bkz. db/01_reset_ve_kurulum.sql);
+# `country` için sabit `false` seçilir. Aksi hâlde ülke kapsamı UndefinedColumn ile çöker.
+_SCOPE_TABLES = {
+    "ülke": ("country", "country_id", "false"),
+    "şehir": ("city", "city_id", "is_test"),
+}
+
+
+def _lookup_scope_names(conn, kind: str) -> list[dict]:
+    """`kind` için tablodaki TÜM (ad, id, is_test) satırları.
+
+    Adla filtrelenmez, hepsi çekilir: hata mesajının "geçerli adlar" listesini ve
+    `difflib` yakın-ad önerisini üretmek için tam kümeye ihtiyaç var. Tablolar
+    küçüktür (3 ülke, ~17 şehir).
+
+    `is_test` filtresi sorguya GÖMÜLMEZ: filtrelenirse test şehri "bulunamadı"
+    görünür ve yazım hatasından ayırt edilemez. Ayrım Python'da yapılır.
+    """
+    table, id_col, is_test_expr = _SCOPE_TABLES[kind]
+    return [
+        dict(m)
+        for m in conn.execute(
+            text(f"SELECT name, {id_col} AS id, {is_test_expr} AS is_test FROM {table}"),
+        ).mappings().all()
+    ]
 
 
 def resolve_scope(engine: Engine, scope: Scope) -> AnalysisScope:
-    """Ülke/şehir adlarını id listelerine çözer. is_test şehirler daima dışlanır."""
+    """Ülke/şehir adlarını id listelerine çözer. is_test şehirler daima dışlanır.
+
+    Çözülemeyen ad `UnknownScopeName` yükseltir — eskiden `[]` dönüp `ANY('{}')`'e
+    çevriliyor ve tüm pipeline 0 satırla, exit 0 ile "başarıyla" bitiyordu.
+    """
     if scope.is_unrestricted:
         return AnalysisScope(None, None)
     country_ids: Optional[list[int]] = None
     city_ids: Optional[list[int]] = None
     with engine.connect() as conn:
         if scope.countries:
-            rows = conn.execute(
-                text("SELECT country_id FROM country WHERE name = ANY(:names)"),
-                {"names": list(scope.countries)},
-            ).scalars().all()
-            country_ids = list(rows)
+            rows = _lookup_scope_names(conn, "ülke")
+            country_ids = _assert_all_resolved("ülke", list(scope.countries), rows)
         if scope.cities:
-            rows = conn.execute(
-                text(
-                    "SELECT city_id FROM city "
-                    "WHERE name = ANY(:names) AND is_test = false"
-                ),
-                {"names": list(scope.cities)},
-            ).scalars().all()
-            city_ids = list(rows)
+            rows = _lookup_scope_names(conn, "şehir")
+            city_ids = _assert_all_resolved("şehir", list(scope.cities), rows)
     return AnalysisScope(country_ids, city_ids)
+
+
+def _assert_all_resolved(kind: str, requested: list[str], rows: list) -> list[int]:
+    """Hepsi çözülmediyse hata. KISMÎ eşleşme de hatadır: iki şehirden biri
+    tutmazsa veri sessizce yarıya iner ve rapor bunu hiçbir yerde söylemez."""
+    ids, missing, test_only = _resolve_scope_names(requested, rows)
+    if test_only:
+        raise UnknownScopeName(
+            f"Hata: {', '.join(repr(n) for n in test_only)} analiz dışıdır "
+            f"(city.is_test = true) — gerçek sürüş verisi değildir."
+        )
+    if missing:
+        raise UnknownScopeName(
+            _unknown_scope_message(kind, missing, [r["name"] for r in rows if not r["is_test"]])
+        )
+    return ids
 
 
 def analysis_timeline(
@@ -224,6 +322,45 @@ def signal_discrimination_rows(
             sql, {**params, "win_min": FIELD_SIGNAL_WINDOW_POST_MIN}
         )
         return _as_dicts(result)
+
+
+def comment_corpus_rows(
+    engine: Engine, scope: Optional[AnalysisScope]
+) -> Iterable[dict]:
+    """Kelime denetiminin korpusu: METNİ OLAN sürüşler (stream generator).
+
+    PAYDA BİLİNÇLİ OLARAK DARDIR — yalnız yorum veya sürüş mesajı taşıyan sürüşler.
+    Sessiz sürüşleri paydaya katmak her kelimeye sahte bir lift kazandırırdı, çünkü
+    "yorum bırakmış olmak" başlı başına başarısızlıkla korelasyonludur.
+
+    `signal_discrimination_rows`'un aksine pencere join'i YOKTUR: `feedback` sürüşle
+    1:1'dir, olay penceresi kurmaya gerek kalmaz.
+    """
+    clause, params = _scope_clause(scope)
+    sql = text(
+        f"""
+        SELECT r.outcome::text AS outcome,
+               f.comment_text,
+               r.end_message
+        FROM ride r
+        JOIN city ci ON ci.city_id = r.city_id
+        LEFT JOIN feedback f
+               ON f.ride_id = r.ride_id AND f.ride_start_time = r.start_time
+        WHERE ci.is_test = false
+          AND r.outcome IN ('BASARILI', 'BASARISIZ_HARD')
+          AND NOT ('OUT_OF_CONTENT' = ANY(r.data_quality_flags))
+          AND (coalesce(f.comment_text, '') <> '' OR coalesce(r.end_message, '') <> '')
+          {clause}
+        """
+    )
+
+    def _iter_rows():
+        with engine.connect() as conn:
+            result = conn.execution_options(stream_results=True).execute(sql, params)
+            for row in result.mappings():
+                yield dict(row)
+
+    return _iter_rows()
 
 
 def list_data_loads(engine: Engine) -> list[dict]:

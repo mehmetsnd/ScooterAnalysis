@@ -14,6 +14,17 @@ from typing import Iterable, Optional, Protocol, runtime_checkable
 from binbin.config import Scope
 
 
+class UnknownScopeName(ValueError):
+    """Kapsam olarak verilen ülke/şehir adı DB'de çözülemedi.
+
+    Sözleşmenin parçasıdır (yalnız bir implementasyon detayı değil): çözülemeyen
+    ad `[]` id listesine, o da `ANY('{}')`'e dönüşür ve tüm pipeline 0 satırla
+    "başarıyla" biter. Sessiz boş sonuç uydurulmuş bir bulgudur; bu yüzden
+    `resolve_scope` bunu YUTMAZ, çağıranın görmesi için yükseltir. CLI bunu
+    `SystemExit`'e çevirir (process kararı shell'in işidir, data katmanının değil).
+    """
+
+
 @dataclass(frozen=True)
 class AnalysisScope:
     """Analiz kapsamı — id listeleri. None = hepsi (filtre yok)."""
@@ -50,7 +61,12 @@ class RideQueryRepository(Protocol):
     """
 
     def resolve_scope(self, scope: Scope) -> AnalysisScope:
-        """Ülke/şehir adlarını id listelerine çözer (is_test şehirler hariç)."""
+        """Ülke/şehir adlarını id listelerine çözer (is_test şehirler hariç).
+
+        Raises:
+            UnknownScopeName: adlardan biri çözülemezse. Kısmî eşleşme de hatadır —
+                iki şehirden biri tutmazsa veri sessizce yarıya iner.
+        """
         raise NotImplementedError
 
     def analysis_timeline(
@@ -77,6 +93,13 @@ class RideQueryRepository(Protocol):
         """Kural kitabındaki her kodun başarısız/başarılı sürüş penceresindeki sıklığı.
 
         `core/signal_audit.summarize_signal_discrimination` bunu lift'e çevirir.
+        """
+        raise NotImplementedError
+
+    def comment_corpus_rows(self, scope: AnalysisScope) -> Iterable[dict]:
+        """Metni olan sürüşler (yorum/sürüş mesajı) — kelime denetiminin korpusu.
+
+        `core/keyword_audit.summarize_keyword_discrimination` bunu lift'e çevirir.
         """
         raise NotImplementedError
 

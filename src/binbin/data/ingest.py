@@ -22,6 +22,8 @@ from sqlalchemy import Engine, text
 
 from binbin.config import INGEST_LOCK_KEY, Scope
 from binbin.data.engine import get_engine
+from binbin.data.queries import _unknown_scope_message
+from binbin.data.repository import UnknownScopeName
 from binbin.domain.enums import RawRentalStatus
 
 _COPY_CHUNK = 1 << 20  # 1 MB
@@ -350,8 +352,41 @@ def _insert_feedback(conn, data_load_id: int) -> None:
     )
 
 
+def _assert_staging_scope_names(engine: Engine, scope: Scope) -> None:
+    """Kapsam adları BU CSV'de gerçekten var mı? Yoksa hata.
+
+    Ingest, analiz yolundan FARKLI eşleşir: `city`/`country` tabloları ilk yüklemede
+    boş olabileceği için DB lookup kullanılamaz, ham staging metni (`country_name`,
+    `region_name`) taranır. Guard olmazsa `_ensure_partitions` sessizce `return`
+    ediyor (min/max NULL), hiçbir satır yazılmıyor ve ingest **SUCCESS/rows_read=0**
+    raporluyor — dosya yanlış sanılıyor. Mesaj DB'nin değil BU DOSYANIN adlarını
+    listeler: "bu CSV'de hiç Bursa yok" bilgisi, yazım hatasını yanlış dosyadan ayırır.
+    """
+    if scope.is_unrestricted:
+        return
+    with engine.connect() as conn:
+        for kind, column, requested in (
+            ("ülke", "country_name", scope.countries),
+            ("şehir", "region_name", scope.cities),
+        ):
+            if not requested:
+                continue
+            available = [
+                r[0]
+                for r in conn.execute(
+                    text(f"SELECT DISTINCT {column} FROM stg_rental_raw WHERE {column} <> ''")
+                ).all()
+            ]
+            missing = [n for n in requested if n not in available]
+            if missing:
+                raise UnknownScopeName(
+                    _unknown_scope_message(f"{kind} (CSV içinde)", missing, available)
+                )
+
+
 def transform_staging_to_ride(engine: Engine, scope: Scope, data_load_id: int) -> IngestReport:
     """stg_rental_raw → referans tabloları + vehicle + ride + feedback (scope-filtreli)."""
+    _assert_staging_scope_names(engine, scope)
     clause, params = _staging_scope_clause(scope)
     report = IngestReport(data_load_id=data_load_id, file_name="")
 
