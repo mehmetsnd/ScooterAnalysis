@@ -101,9 +101,20 @@ def test_para_iadesi_teknik_odeme_degil():
     assert result.category is not FailureCategory.ODEME
 
 
-def test_alan_disi_regulasyon():
+def test_alan_disi_artik_regulasyon_sayilmaz():
+    """ÖLÇÜMLE DEĞİŞTİ (2026-08-05): `alan disi` regülasyon sinyali DEĞİL.
+
+    Eskiden bu ifade REGULASYON'a yazılıyordu. Denetim (`--kelime-denetimi`)
+    sistem mesajı ve kullanıcı yorumu için AYRI ayrı ölçtü:
+        mesajda 5 başarısız / 52 başarılı → 0,5x
+        yorumda 0 başarısız / 27 başarılı → 0,0x
+    Sistem bu ifadeyi BAŞARILI sürüşlerin bitiş mesajı olarak da yazıyor; yani
+    "alan dışına çıkıldı" normal bir sürüş sonu, başarısızlık nedeni değil.
+    Kategori atamak, sinyalsize kategori uydurmak olurdu (ALTIN KURAL).
+    """
     result = classify_ride(_ride(end_message="alan dışı, sürüş sonlandırıldı"))
-    assert result.category is FailureCategory.REGULASYON
+    assert result.category is None
+    assert result.source is ClassificationSource.NONE
 
 
 # --- field_category/field_reason (araç durum-değişim defteri sinyali) -------

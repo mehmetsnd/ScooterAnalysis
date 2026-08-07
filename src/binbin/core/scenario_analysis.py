@@ -194,8 +194,8 @@ def _new_accumulator(scenario: FailureScenario) -> dict:
         "verdicts": Counter(),
         "subregions": defaultdict(lambda: {"failed": 0, "false_alarm": 0}),
         "hourly": Counter(),
-        # Regülasyon Matrisi: kategori (TEKNIK/REGULASYON/.../SINYALSIZ) x verdict.
-        "regulation_matrix": defaultdict(Counter),
+        # Kategori-Sonuç Matrisi: kategori (TEKNIK/REGULASYON/.../SINYALSIZ) x verdict.
+        "category_matrix": defaultdict(Counter),
         # TEKNİK ARIZA KIRILIMI: (kaynak, etiket) -> sürüş/verdict/boşa görev.
         # Etiket DB'den (kural kitabı açıklaması) akar; core 58 kodu HARDCODE ETMEZ.
         "technical_detail": defaultdict(
@@ -244,13 +244,13 @@ def _update_false_fault(acc: dict, assessment, vehicle_id: int) -> None:
     target["wasted_missions"] += assessment.wasted_missions
 
 
-def _update_regulation_matrix(acc: dict, category: str, verdict: FaultVerdict) -> None:
-    """Regülasyon Matrisi: her başarısız sürüşü (kategori, verdict) hücresine ekler.
+def _update_category_matrix(acc: dict, category: str, verdict: FaultVerdict) -> None:
+    """Kategori-Sonuç Matrisi: her başarısız sürüşü (kategori, verdict) hücresine ekler.
 
     SINYALSIZ dahil TÜM kategoriler yazılır (uydurma yok, şeffaf raporlama) —
     araç durum-sinyali sayesinde bu kütlenin küçülmesi beklenir, gizlenmez.
     """
-    acc["regulation_matrix"][category][verdict.value] += 1
+    acc["category_matrix"][category][verdict.value] += 1
 
 
 # Sınıflandırma kaynağının rapordaki insan-okur adı. Hangi kanıt TEKNIK kategoriyi
@@ -285,7 +285,7 @@ def _update_technical_detail(acc: dict, classification, assessment, signal_desc)
         entry["wasted_missions"] += assessment.wasted_missions
 
 
-_REGULATION_MATRIX_VERDICT_ORDER = (
+_CATEGORY_MATRIX_VERDICT_ORDER = (
     FaultVerdict.GERCEK_ARIZA_SUPHESI.value,
     FaultVerdict.SAHTE_ALARM_SUPHESI.value,
     FaultVerdict.BILDIRIM_YOK.value,
@@ -305,7 +305,7 @@ def _finalize_scenario(acc: dict, common: dict, cost_rows: list[dict]) -> dict:
     signalless_count = acc["categories"].get("SINYALSIZ", 0)
 
     matrix_rows = []
-    for category, counts in acc["regulation_matrix"].items():
+    for category, counts in acc["category_matrix"].items():
         row_total = sum(counts.values())
         # "Bildirimli" = birinin arıza iddiası olduğu verdict'ler. NEDEN DAĞILIMI bunu
         # kullanır: sinyalsiz kütlesinin çoğunda ortada bir iddia YOKTUR, o yüzden tek
@@ -320,7 +320,7 @@ def _finalize_scenario(acc: dict, common: dict, cost_rows: list[dict]) -> dict:
         matrix_rows.append(
             {
                 "category": category,
-                "counts": {v: counts.get(v, 0) for v in _REGULATION_MATRIX_VERDICT_ORDER},
+                "counts": {v: counts.get(v, 0) for v in _CATEGORY_MATRIX_VERDICT_ORDER},
                 "total": row_total,
                 "reported": reported,
                 "reported_pct": _pct(reported, row_total),
@@ -457,8 +457,8 @@ def _finalize_scenario(acc: dict, common: dict, cost_rows: list[dict]) -> dict:
         },
         "control": {"groups": groups},
         "false_fault": {"primary": primary, "details": details},
-        "regulation_matrix": {
-            "verdict_order": list(_REGULATION_MATRIX_VERDICT_ORDER),
+        "category_matrix": {
+            "verdict_order": list(_CATEGORY_MATRIX_VERDICT_ORDER),
             "rows": matrix_rows,
         },
         # Satır toplamı DAİMA categories["TEKNIK"]'e eşittir (test bunu korur).
@@ -628,7 +628,7 @@ def analyze_scenarios(
             )
             _update_control(acc, assessment)
             _update_false_fault(acc, assessment, int(row.get("vehicle_id") or 0))
-            _update_regulation_matrix(acc, category, assessment.verdict)
+            _update_category_matrix(acc, category, assessment.verdict)
             if category == FailureCategory.TEKNIK.value:
                 _update_technical_detail(
                     acc, classification, assessment, row.get("field_signal_desc")

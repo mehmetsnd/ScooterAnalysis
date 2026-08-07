@@ -61,7 +61,7 @@ INSERT INTO fleet_status_code (status_id, enum_name, description) VALUES
 
 -- ------------------------------------------------------------
 -- 2) REFERANS: fleet_status_reason  (VehicleStatusReason.txt, 58 değer)
---    ↓ KURAL KİTABI ↓ — Regülasyon Matrisi'nin veri kaynağı.
+--    ↓ KURAL KİTABI ↓ — Kategori-Sonuç Matrisi'nin veri kaynağı.
 -- ------------------------------------------------------------
 -- category_hint/reason_hint yalnızca AÇIK, tek anlamlı teknik arıza
 -- sinyallerine atanır (is_fault_signal=true). Davranışsal/belirsiz kodlar
@@ -219,9 +219,9 @@ CREATE UNLOGGED TABLE stg_status_raw (
 
 
 -- ------------------------------------------------------------
--- 5) RAPORLAMA GÖRÜNÜMÜ — Regülasyon Matrisi'nin SQL tarafı
+-- 5) RAPORLAMA GÖRÜNÜMÜ — Kategori-Sonuç Matrisi'nin SQL tarafı
 -- ------------------------------------------------------------
--- CLI'daki asıl Regülasyon Matrisi (kategori × verdict, scenario_analysis
+-- CLI'daki asıl Kategori-Sonuç Matrisi (kategori × verdict, scenario_analysis
 -- motorunda hesaplanır) için ham girdi değildir; ad-hoc SQL keşfi ve kural
 -- kitabının sahaya sunumu içindir.
 CREATE VIEW v_fleet_status_signal_matrix AS

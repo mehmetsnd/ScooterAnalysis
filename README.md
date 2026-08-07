@@ -53,7 +53,12 @@ python -m pytest tests/ -q
 #   Mevcut Kural = kaynak BASARISIZ_HARD veya 120 sn/60 m
 #   Özel Kural   = kaynak etiketi yok sayılır; yalnız CLI'daki eşik uygulanır
 python -m binbin.cli analyze --wi-duration 75 --wi-distance 60 \
-  --false-fault --detay --derin --sinyal-denetimi --esik-taramasi --charts out
+  --false-fault --detay --derin --sinyal-denetimi --esik-taramasi --kelime-denetimi --charts out
+
+# Kapsam: bayraksız = DEFAULT_SCOPE (Türkiye + İstanbul), TÜM VERİ DEĞİL.
+# Ad çözülemezse sessiz boş sonuç yerine öneri içeren hata verilir (exit 1).
+python -m binbin.cli analyze --city "İstanbul Avrupa" --city Bursa
+.\run.ps1 -City "İstanbul Avrupa","Bursa"     # aynı pipeline, şehir kapsamıyla
 ```
 
 Ingest sonrası DB doğrulama: `country`=3, `city`≥2 (is_test hariç),
@@ -112,7 +117,7 @@ src/binbin/
 │   ├── ingest.py         # sürüş CSV → Postgres ETL
 │   └── ingest_status.py  # araç durum-değişim CSV → Postgres ETL
 ├── core/        # SAF çekirdek (I/O yok): classifier, false_fault, keywords,
-│                # scenario_analysis, threshold_scan, signal_audit
+│                # scenario_analysis, threshold_scan, signal_audit, keyword_audit
 ├── reporting/   # charts.py (matplotlib PNG), format.py (ortak biçimleyiciler)
 └── cli/         # main.py — TEK giriş noktası (ingest/classify/assess/analyze/loads)
 

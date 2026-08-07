@@ -208,11 +208,11 @@ def chart_scenario_causes(report: dict, out_dir: Path) -> Path:
                             out_dir, "scenario_causes.png")
     # SİNYALSİZ kütlesinin asıl bulgusu (rapor §9.2): büyük çoğunluğu bildirimsiz,
     # yalnız küçük bir dilimi bildirimli ama kategori atanamayan. Bu ayrım
-    # regulation_matrix'in SINYALSIZ satırından geliyor (reported / no_report).
+    # category_matrix'in SINYALSIZ satırından geliyor (reported / no_report).
     reported_by_scenario = []
     for scenario in scenarios:
         row = next(
-            (r for r in scenario["regulation_matrix"]["rows"] if r["category"] == "SINYALSIZ"),
+            (r for r in scenario["category_matrix"]["rows"] if r["category"] == "SINYALSIZ"),
             None,
         )
         reported_by_scenario.append(row["reported"] if row else 0)

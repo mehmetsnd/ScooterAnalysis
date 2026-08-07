@@ -11,7 +11,7 @@ from binbin.core.scenario_analysis import (
 )
 from binbin.core.threshold_scan import ThresholdScanAccumulator
 from binbin.cli.main import (
-    _print_regulation_matrix,
+    _print_category_matrix,
     _print_scenario_causes,
     _print_scenario_comparisons,
     _print_scenario_control,
@@ -145,9 +145,9 @@ def test_two_scenario_totals_and_single_transition():
     assert comparison["failed_to_unevaluated"] == 1
 
 
-def test_field_signal_resolves_signalless_and_fills_regulation_matrix():
+def test_field_signal_resolves_signalless_and_fills_category_matrix():
     """Durum-defteri sinyali olan bir sürüş SINYALSIZ değil TEKNIK'e düşer ve
-    Regülasyon Matrisi'nde (kategori x verdict) karşılığını bulur."""
+    Kategori-Sonuç Matrisi'nde (kategori x verdict) karşılığını bulur."""
     row = _row(1, "BASARISIZ_HARD", 50, 10)
     row["field_category"] = "TEKNIK"
     row["field_reason"] = "CONNECTION_LOST"
@@ -159,7 +159,7 @@ def test_field_signal_resolves_signalless_and_fills_regulation_matrix():
     categories = {c["category"]: c["count"] for c in scenario["cause"]["categories"]}
     assert categories["TEKNIK"] == 1
 
-    matrix_rows = {r["category"]: r for r in scenario["regulation_matrix"]["rows"]}
+    matrix_rows = {r["category"]: r for r in scenario["category_matrix"]["rows"]}
     assert "SINYALSIZ" not in matrix_rows
     assert matrix_rows["TEKNIK"]["total"] == 1
     # Bu satırda next_ride yok -> assess_ride her zaman DEGERLENDIRILEMEDI döner.
@@ -252,11 +252,11 @@ def test_technical_detail_empty_without_technical_failures():
     assert scenario["technical_detail"]["total"] == 0
 
 
-def test_regulation_matrix_without_signal_falls_back_to_signalless():
+def test_category_matrix_without_signal_falls_back_to_signalless():
     """Sinyal yoksa (mevcut davranış) matris hâlâ SINYALSIZ satırıyla şeffaf raporlar."""
     report = analyze_scenarios([_row(1, "BASARISIZ_HARD", 50, 10)])
     matrix_rows = {
-        r["category"]: r for r in report["scenarios"]["current_rule"]["regulation_matrix"]["rows"]
+        r["category"]: r for r in report["scenarios"]["current_rule"]["category_matrix"]["rows"]
     }
     assert matrix_rows["SINYALSIZ"]["total"] == 1
 
@@ -280,13 +280,13 @@ def test_cli_uses_readable_scenario_names(capsys):
     _print_scenario_criteria(report)
     _print_scenario_control(report)
     _print_scenario_false_fault(report)
-    _print_regulation_matrix(report)
+    _print_category_matrix(report)
     _print_scenario_vehicles(report)
     _print_scenario_subregions(report)
     _print_scenario_hourly(report)
     _print_technical_detail(report)
     output = capsys.readouterr().out
-    assert "REGÜLASYON MATRİSİ" in output
+    assert "KATEGORİ-SONUÇ MATRİSİ" in output
     # P4: yanıltıcı tek "sinyalsiz %" yerine bildirimli/bildirimsiz ayrımı basılmalı.
     assert "Bildirimli" in output and "Bildirimsiz" in output
     assert "Bildirim VAR ama kategori atanamayan" in output

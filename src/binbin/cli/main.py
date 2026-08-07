@@ -107,7 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_an.add_argument("--derin", action="store_true", help="Saatlik yerel kırılım")
     p_an.add_argument(
         "--false-fault", action="store_true",
-        help="Sahte arıza özeti + regülasyon matrisi + teknik arıza kırılımı",
+        help="Sahte arıza özeti + kategori-sonuç matrisi + teknik arıza kırılımı",
     )
     p_an.add_argument(
         "--sinyal-denetimi", action="store_true", dest="sinyal_denetimi",
@@ -116,6 +116,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_an.add_argument(
         "--esik-taramasi", action="store_true", dest="esik_taramasi",
         help="Özel Kural süre/mesafe ızgarasını F1 ile tarar, en isabetli eşiği önerir",
+    )
+    p_an.add_argument(
+        "--kelime-denetimi", action="store_true", dest="kelime_denetimi",
+        help="Anahtar kelime kural kitabının ayırt ediciliğini (lift) ölçüp raporlar",
     )
     p_an.add_argument("--charts", type=Path, metavar="DIR", help="PNG'leri bu klasöre üret")
     p_an.add_argument(
@@ -325,10 +329,12 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     _print_scenario_control(report)
     if args.false_fault:
         _print_scenario_false_fault(report)
-        _print_regulation_matrix(report)
+        _print_category_matrix(report)
         _print_technical_detail(report)
     if args.sinyal_denetimi:
         _print_signal_audit(repo.signal_discrimination_rows(ascope))
+    if args.kelime_denetimi:
+        _print_keyword_audit(repo.comment_corpus_rows(ascope))
     if args.detay:
         _print_scenario_vehicles(report)
         _print_scenario_subregions(report)
@@ -429,26 +435,26 @@ def _print_scenario_comparisons(report: dict) -> None:
         print(f"\n{c['from_label'].upper()} → {c['to_label'].upper()}")
         print("─" * 68)
         print(
-            f"Başarısızdan başarılıya dönen  {_tr_int(c['failed_to_success']):>10}  "
+            f"{'Başarısızdan başarılıya dönen':<35}{_tr_int(c['failed_to_success']):>10}  "
             f"başlangıç başarısızlarının {_tr_pct(c['failed_to_success_pct'])}’i"
         )
         print(
-            f"Başarıdan başarısıza dönen      {_tr_int(c['success_to_failed']):>10}  "
+            f"{'Başarıdan başarısıza dönen':<35}{_tr_int(c['success_to_failed']):>10}  "
             f"başlangıç başarılılarının {_tr_pct(c['success_to_failed_pct'])}’i"
         )
         print(
-            f"Net başarısız değişimi          {_signed_int(c['failed_count_delta']):>10}  "
+            f"{'Net başarısız değişimi':<35}{_signed_int(c['failed_count_delta']):>10}  "
             f"oran farkı {c['failure_rate_pp_delta']:+.1f} puan · "
             f"göreli {c['relative_failed_pct']:+.1f}%"
         )
         if c["failed_to_unevaluated"]:
-            print(f"Başarısızdan değerlendirme dışına {_tr_int(c['failed_to_unevaluated']):>10}")
+            print(f"{'Başarısızdan değerlendirme dışına':<35}{_tr_int(c['failed_to_unevaluated']):>10}")
         if c["success_to_unevaluated"]:
-            print(f"Başarıdan değerlendirme dışına    {_tr_int(c['success_to_unevaluated']):>10}")
+            print(f"{'Başarıdan değerlendirme dışına':<35}{_tr_int(c['success_to_unevaluated']):>10}")
         if c["unevaluated_to_failed"]:
-            print(f"Değerlendirme dışından başarısıza {_tr_int(c['unevaluated_to_failed']):>10}")
+            print(f"{'Değerlendirme dışından başarısıza':<35}{_tr_int(c['unevaluated_to_failed']):>10}")
         if c["unevaluated_to_success"]:
-            print(f"Değerlendirme dışından başarıya   {_tr_int(c['unevaluated_to_success']):>10}")
+            print(f"{'Değerlendirme dışından başarıya':<35}{_tr_int(c['unevaluated_to_success']):>10}")
 
 
 def _print_scenario_causes(report: dict) -> None:
@@ -463,7 +469,7 @@ def _print_scenario_causes(report: dict) -> None:
     """
     _section("NEDEN DAĞILIMI")
     for scenario in _scenario_list(report):
-        rows = scenario["regulation_matrix"]["rows"]
+        rows = scenario["category_matrix"]["rows"]
         if not rows:
             continue
         print(f"\n{scenario['label']}")
@@ -630,6 +636,81 @@ def _print_signal_audit(rows: list[dict]) -> None:
     )
 
 
+def _print_keyword_audit(rows) -> None:
+    """ANAHTAR KELİME AYIRT EDİCİLİĞİ — kural kitabının kelime tarafının denetimi.
+
+    `--sinyal-denetimi`'nin kelime karşılığı. Kelime kümeleri kanıt üretiminin
+    merkezindedir (`_has_fault_text` → `fault_reported` → boşa görev ve F1), bu
+    yüzden hangi kelimenin gerçekten ayırt ettiği ÖLÇÜLÜR, varsayılmaz.
+    """
+    from binbin.core import keywords as kw_sets
+    from binbin.core.keyword_audit import (
+        MIN_KEYWORD_VOLUME,
+        coverage_summary,
+        summarize_keyword_discrimination,
+    )
+
+    sets = {
+        "TEKNIK": kw_sets.TECHNICAL_KEYWORDS,
+        "REGULASYON": kw_sets.REGULATION_KEYWORDS,
+        "KULLANICI": kw_sets.USER_KEYWORDS,
+        "SISTEM": kw_sets.SYSTEM_KEYWORDS,
+    }
+    # Korpus generator: iki kez tüketilemez, listeye alınır (metinli sürüşler
+    # tüm kütlenin küçük bir dilimidir — ~32 bin satır, bellek sorunu değil).
+    corpus = list(rows)
+    summary = summarize_keyword_discrimination(corpus, sets)
+    coverage = coverage_summary(corpus, sets)
+
+    _section("ANAHTAR KELİME AYIRT EDİCİLİĞİ")
+    print(
+        f"Korpus: metni olan {_tr_int(len(corpus))} sürüş · "
+        f"başarısız+metinli {_tr_int(coverage['failed_with_text'])}"
+    )
+    print(
+        f"Kapsam: {_tr_int(coverage['matched'])} eşleşti "
+        f"({_tr_pct(coverage['matched_pct'])}) · "
+        f"{_tr_int(coverage['unmatched'])} eşleşmedi"
+    )
+    print(
+        f"\n{'Set':<11}{'Anahtar':<26}{'Başarısızda':>12}{'Başarılıda':>12}"
+        f"{'Lift':>8}{'Tekil':>7}  {'Not':<28}"
+    )
+    print("─" * 105)
+    shown = [r for r in summary if not r["dead"]]
+    for row in shown:
+        lift = "∞" if row["lift"] is None else f"{_tr_dec(row['lift'], 1)}x"
+        note = ""
+        if row["lift"] is not None and row["lift"] < 1.0 and row["ok_hits"]:
+            # Başarılıda daha sık. "Yanlış" demek DEĞİLDİR: başarılı bir sürüşte de
+            # gerçek arıza bildirilmiş olabilir. Hüküm gerekçeyle keywords.py'de.
+            note = "TERS — başarılıda daha sık"
+        elif row["uncontaminated"]:
+            note = "temiz (başarılıda hiç yok)"
+        elif row["low_volume"]:
+            note = "hacim yetersiz"
+        elif row["weak"]:
+            note = "zayıf — gerekçeyi gözden geçir"
+        print(
+            f"{row['set_name']:<11}{row['keyword'][:25]:<26}"
+            f"{_tr_int(row['fail_hits']):>12}{_tr_int(row['ok_hits']):>12}"
+            f"{lift:>8}{_tr_int(row['marginal_hits']):>7}  {note:<28}"
+        )
+    dead = [r for r in summary if r["dead"]]
+    if dead:
+        print(
+            f"\nHiç eşleşmeyen (fiilen ölü) {len(dead)} anahtar: "
+            + ", ".join(f"{r['keyword']}" for r in sorted(dead, key=lambda r: r["keyword"]))
+        )
+    print(
+        "\nLift = P(kelime | başarısız) / P(kelime | başarılı). Payda METİNLİ sürüşlerdir;"
+        "\nsessizleri katmak her kelimeye sahte lift kazandırırdı."
+        f"\n'Tekil' = o kelime silinse TÜM kanıtını kaybedecek başarısız sürüş sayısı."
+        f"\nBenimseme: (A) başarısızda ≥{MIN_KEYWORD_VOLUME} VE lift ≥2,0 · VEYA (B) başarılıda HİÇ yok."
+        "\nBu çıktı KARAR VERMEZ; gerekçe keywords.py yorumlarına yazılır."
+    )
+
+
 def _print_technical_detail(report: dict) -> None:
     """TEKNİK ARIZA KIRILIMI — teknik başarısızlığın NEDENİ, kanıt kaynağıyla birlikte.
 
@@ -648,14 +729,14 @@ def _print_technical_detail(report: dict) -> None:
             continue
         print(f"\n{scenario['label']}  (toplam teknik: {_tr_int(detail['total'])})")
         print(
-            f"{'Kaynak':<16}{'Neden':<26}{'Sürüş':>9}{'Gerçek(ş)':>9}"
+            f"{'Kaynak':<16}{'Neden':<26}{'Sürüş':>9}{'Gerçek(ş)':>10}"
             f"{'Sahte(ş)':>9}{'Bildirimsiz':>13}{'Boşa görev':>13}"
         )
-        print("─" * 95)
+        print("─" * 96)
         for row in rows:
             print(
                 f"{row['source']:<16}{row['label'][:25]:<26}"
-                f"{_tr_int(row['rides']):>9}{_tr_int(row['real_fault']):>9}"
+                f"{_tr_int(row['rides']):>9}{_tr_int(row['real_fault']):>10}"
                 f"{_tr_int(row['false_alarm']):>9}{_tr_int(row['no_report']):>13}"
                 f"{_tr_int(row['wasted_missions']):>13}"
             )
@@ -666,15 +747,15 @@ def _print_technical_detail(report: dict) -> None:
     )
 
 
-def _print_regulation_matrix(report: dict) -> None:
+def _print_category_matrix(report: dict) -> None:
     """Kategori × verdict çapraz-tablosu. Kural kitabı (fleet_status_reason) DB'de
     yaşar; burada yalnız zaten hesaplanmış sayılar basılır (bkz. core/scenario_analysis).
     """
-    _section("REGÜLASYON MATRİSİ")
+    _section("KATEGORİ-SONUÇ MATRİSİ")
     scenarios = _scenario_list(report)
     col_width = 16
     for scenario in scenarios:
-        matrix = scenario["regulation_matrix"]
+        matrix = scenario["category_matrix"]
         rows = matrix["rows"]
         if not rows:
             continue
@@ -894,10 +975,20 @@ _HANDLERS = {
 
 
 def main(argv: list[str] | None = None) -> None:
-    """CLI: argümanları ayrıştırır ve ilgili komutu çalıştırır."""
+    """CLI: argümanları ayrıştırır ve ilgili komutu çalıştırır.
+
+    `UnknownScopeName` burada `SystemExit`'e çevrilir: process kararı (çık, kodu 1)
+    shell'in işidir, `data/` katmanının değil. Non-zero exit `run.ps1`'in
+    `$LASTEXITCODE` guard'ını tetikler ve pipeline 1. adımda durur.
+    """
+    from binbin.data.repository import UnknownScopeName
+
     _force_utf8_stdout()
     args = build_parser().parse_args(argv)
-    _HANDLERS[args.command](args)
+    try:
+        _HANDLERS[args.command](args)
+    except UnknownScopeName as exc:
+        raise SystemExit(str(exc))
 
 
 if __name__ == "__main__":
