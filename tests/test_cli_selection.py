@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from binbin.cli.main import build_parser, cmd_ingest, select_csv
-from binbin.data.ingest import list_source_csvs
+from binbin.data.ingest import RIDES_COLUMNS, STATUS_COLUMNS, list_source_csvs
 
 
 def _touch(dir_, name):
@@ -103,12 +103,9 @@ def _fake_status_report(**over):
 
 def test_cmd_ingest_iki_turu_de_basligindan_ayirip_yonlendirir(tmp_path, monkeypatch, capsys):
     rides_csv = tmp_path / "a_rides.csv"
-    rides_csv.write_text("rental_id,user_id\n1,2\n", encoding="utf-8")
+    rides_csv.write_text(",".join(RIDES_COLUMNS) + "\n", encoding="utf-8")
     status_csv = tmp_path / "b_status.csv"
-    status_csv.write_text(
-        "id,vehicle_id,status_id,status_reason_id,previous_status_id\n1,2,3,4,5\n",
-        encoding="utf-8",
-    )
+    status_csv.write_text(",".join(STATUS_COLUMNS) + "\n", encoding="utf-8")
 
     calls = []
 
@@ -135,10 +132,7 @@ def test_cmd_ingest_iki_turu_de_basligindan_ayirip_yonlendirir(tmp_path, monkeyp
 
 def test_cmd_ingest_file_bayragi_turu_otomatik_algilar(tmp_path, monkeypatch):
     status_csv = tmp_path / "only_status.csv"
-    status_csv.write_text(
-        "id,vehicle_id,status_id,status_reason_id,previous_status_id\n1,2,3,4,5\n",
-        encoding="utf-8",
-    )
+    status_csv.write_text(",".join(STATUS_COLUMNS) + "\n", encoding="utf-8")
     calls = []
 
     def fake_run_status_ingest(csv_path, scope, force=False):

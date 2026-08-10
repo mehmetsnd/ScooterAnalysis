@@ -12,6 +12,7 @@ Pandas bilinçli olarak kullanılmaz: büyük CSV'yi RAM'e almak yerine COPY ile
 ederiz — bellek sabit kalır, ingest hızlanır.
 """
 
+import csv
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -56,25 +57,101 @@ _STATUS_IN = (
 )
 _ELIGIBLE_RAW = f"{_STATUS_IN} AND s.start_date_tr <> '' AND s.end_date_tr <> ''"
 
-# CSV türünü başlık satırının ilk sütunlarından ayırt eder (ingest komutunun
-# otomatik yönlendirmesi + testler için). Yeni bir kaynak CSV eklenirse buraya
-# bir satır eklenir; cli katmanı bu fonksiyonu değiştirmeden yeni türü kazanır.
-_RIDES_HEADER_PREFIX = "rental_id,"
-_STATUS_HEADER_PREFIX = "id,vehicle_id,status_id,"
+# Şema sözleşmesi: staging tablolarının (db/01, db/06) kolon SIRASIYLA aynıdır.
+# COPY konumsal çalıştığı için sıra da ad kadar bağlayıcıdır.
+RIDES_COLUMNS: tuple[str, ...] = (
+    "rental_id", "user_id", "vehicle_id", "plate", "vehicle_type_id",
+    "country_id", "country_name", "region_id", "region_name", "sub_region_id",
+    "rental_status", "status_label", "start_date_tr", "end_date_tr",
+    "checkout_date_tr", "gross_amount", "net_amount", "total_discount_amount",
+    "refund_total", "is_refunded", "currency", "reason_id", "message",
+    "distance", "duration", "minute_fee", "start_fee", "insurance_fee",
+    "is_rental_insuranced", "source_id", "device_id", "is_group_rental",
+    "created_on_tr", "updated_on_tr", "mongo_distance_meters",
+    "distance_meters", "distance_source", "rental_rate_id",
+    "ride_rating", "ride_comment", "rating_created_at_tr",
+)
+STATUS_COLUMNS: tuple[str, ...] = (
+    "id", "vehicle_id", "status_id", "status_reason_id",
+    "previous_status_id", "previous_status_reason_id",
+    "description", "created_by", "created_on",
+)
+_EXPECTED_COLUMNS = {"rides": RIDES_COLUMNS, "status": STATUS_COLUMNS}
+# Tür tespiti imzası, kolon listelerinden TÜRETİLİR (elle yazılan kopya sapardı).
+# `rental_id` tek başına ayırt edici; `id` değil, o yüzden status 3 kolon ister.
+_KIND_SIGNATURES = {"rides": RIDES_COLUMNS[:1], "status": STATUS_COLUMNS[:3]}
+
+
+class SchemaContractError(ValueError):
+    """CSV başlığı beklenen şemayla uyuşmuyor — veri yanlış kolona akabilirdi."""
+
+
+def _read_header(csv_path: Path) -> list[str]:
+    """Başlık satırını CSV kurallarıyla okur (tırnak, BOM, CRLF, baş/son boşluk).
+
+    `utf-8-sig`: Excel'den geçen dosyalar BOM ekler ve bu bir şema ihlali değildir.
+    `csv.reader`: naif `split(",")` tırnaklı başlıkları (`"rental_id",…`) bozardı.
+    """
+    try:
+        with open(csv_path, encoding="utf-8-sig", newline="") as f:
+            row = next(csv.reader(f), [])
+    except (csv.Error, UnicodeDecodeError) as exc:
+        # csv.Error, ValueError alt sınıfı değil: sarmalanmazsa CLI'ı atlar.
+        raise SchemaContractError(f"{csv_path.name}: başlık okunamadı ({exc}).")
+    return [c.strip() for c in row]
 
 
 def detect_csv_kind(csv_path: Path) -> str:
     """CSV başlık satırından veri türünü ayırır: 'rides' | 'status'.
 
     Yalnız ilk satırı okur (büyük dosyada ucuz). Bilinmeyen başlık → ValueError.
+    Tür TESPİTİ yapar; şema DOĞRULAMASI `validate_csv_header`'ın işidir.
     """
-    with open(csv_path, encoding="utf-8") as f:
-        header = f.readline()
-    if header.startswith(_RIDES_HEADER_PREFIX):
-        return "rides"
-    if header.startswith(_STATUS_HEADER_PREFIX):
-        return "status"
-    raise ValueError(f"Bilinmeyen CSV türü: {csv_path.name} (başlık: {header[:50]!r})")
+    header = _read_header(csv_path)
+    for kind, signature in _KIND_SIGNATURES.items():
+        if tuple(header[: len(signature)]) == signature:
+            return kind
+    raise ValueError(
+        f"Bilinmeyen CSV türü: {csv_path.name} (başlık: {','.join(header)[:50]!r})"
+    )
+
+
+def validate_csv_header(csv_path: Path, kind: str) -> None:
+    """Başlığın TAMAMINI beklenen kolon listesiyle karşılaştırır; sapmada hata verir.
+
+    Fazladan kolon da hatadır: COPY konumsal çalışır, staging tablosunda karşılığı
+    olmayan sütun zaten "extra data after last expected column" ile reddedilir.
+    Hata mesajı yeni kolonları adlarıyla sayar — eşleme kararı (ör. `distance` mi
+    `mongo_distance_meters` mi) alan bilgisi gerektirir, tahmin edilmez.
+    """
+    expected = _EXPECTED_COLUMNS.get(kind)
+    if expected is None:
+        raise SchemaContractError(
+            f"Bilinmeyen CSV türü {kind!r}; beklenen: {sorted(_EXPECTED_COLUMNS)}"
+        )
+    actual = _read_header(csv_path)
+    if not actual or not actual[0]:
+        raise SchemaContractError(f"{csv_path.name}: dosya boş veya başlık satırı yok.")
+    # Ad kontrolü önce: ortadan silinen bir kolonda ilk sapmayı bildirmek,
+    # "son sütun eksik" demekten çok daha bilgilendirici.
+    for i, (name, got) in enumerate(zip(expected, actual), start=1):
+        if got != name:
+            raise SchemaContractError(
+                f"{csv_path.name}: {i}. sütun {name!r} bekleniyordu, {got!r} geldi."
+                " Kolon sırası değişmiş olabilir — veri yanlış kolonlara akardı."
+            )
+    if len(actual) < len(expected):
+        raise SchemaContractError(
+            f"{csv_path.name}: başlık {len(actual)} sütun, {len(expected)} bekleniyor;"
+            f" ilk eksik: {expected[len(actual)]!r} ({len(actual) + 1}. sütun)"
+        )
+    extra = actual[len(expected):]
+    if extra:
+        named = ", ".join(c or "<adsız>" for c in extra)
+        raise SchemaContractError(
+            f"{csv_path.name}: {len(extra)} yeni kolon var, tabloya eşlenmemiş: {named}."
+            " Yüklemeden önce staging + INSERT eşlemesi güncellenmeli (migration)."
+        )
 
 
 @dataclass

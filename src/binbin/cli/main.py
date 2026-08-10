@@ -193,16 +193,28 @@ def _print_status_ingest_report(report) -> None:
         print(f"  UYARI: {w}")
 
 
-def _ingest_one(kind: str, csv_path: Path, scope: Scope, force: bool) -> None:
-    """Türüne göre doğru transformer'a yönlendirir (rides → ride, status → fleet_status_event)."""
+def _run_ingest_for_kind(kind: str, csv_path: Path, scope: Scope, force: bool) -> None:
     from binbin.data.ingest import run_ingest
     from binbin.data.ingest_status import run_status_ingest
 
-    print(f"\nCSV [{kind}]: {csv_path} ({csv_path.stat().st_size / 1_048_576:.1f} MB)")
+    # Doğrulama tüm dosyalar için önden koştuğu için künye satırı burada tekrarlanır;
+    # yoksa çoklu yüklemede hangi raporun hangi dosyaya ait olduğu okunmuyor.
+    print(f"\nYükleniyor [{kind}]: {csv_path.name}")
     if kind == "rides":
         _print_rides_ingest_report(run_ingest(csv_path, scope, force=force))
     else:
         _print_status_ingest_report(run_status_ingest(csv_path, scope, force=force))
+
+
+def _check_schema(kind: str, csv_path: Path) -> None:
+    """Şema sözleşmesini doğrular. Süreç kararı CLI'da kalır; `data/` yalnız fırlatır."""
+    from binbin.data.ingest import SchemaContractError, validate_csv_header
+
+    print(f"\nCSV [{kind}]: {csv_path} ({csv_path.stat().st_size / 1_048_576:.1f} MB)")
+    try:
+        validate_csv_header(csv_path, kind)
+    except SchemaContractError as exc:
+        raise SystemExit(f"Hata: {exc}")
 
 
 def cmd_ingest(args: argparse.Namespace) -> None:
@@ -218,23 +230,28 @@ def cmd_ingest(args: argparse.Namespace) -> None:
 
     if args.file is not None:
         csv_path = select_csv([], explicit=args.file, prompt_fn=None)
-        _ingest_one(detect_csv_kind(csv_path), csv_path, scope, args.force)
-        return
+        selected = [(detect_csv_kind(csv_path), csv_path)]
+    else:
+        if not files:
+            raise SystemExit("Hata: data_raw/ içinde .csv yok.")
+        # SIRA YÜK TAŞIR: rides ÖNCE. Sürüş ingest'i vehicle'ı plakayla açar; ters sırada
+        # araçlar plakasız oluşur ve ON CONFLICT DO NOTHING onları güncellemez → plaka kaybolur.
+        by_kind: dict[str, list[Path]] = {"rides": [], "status": []}
+        for f in files:
+            by_kind[detect_csv_kind(f)].append(f)
+        selected = [
+            (kind, select_csv(kind_files, explicit=None, prompt_fn=prompt_fn))
+            for kind, kind_files in by_kind.items()
+            if kind_files
+        ]
 
-    if not files:
-        raise SystemExit("Hata: data_raw/ içinde .csv yok.")
-
-    # SIRA YÜK TAŞIR: rides ÖNCE. Sürüş ingest'i vehicle'ı plakayla açar; ters sırada
-    # araçlar plakasız oluşur ve ON CONFLICT DO NOTHING onları güncellemez → plaka kaybolur.
-    by_kind: dict[str, list[Path]] = {"rides": [], "status": []}
-    for f in files:
-        by_kind[detect_csv_kind(f)].append(f)
-
-    for kind, kind_files in by_kind.items():
-        if not kind_files:
-            continue
-        csv_path = select_csv(kind_files, explicit=None, prompt_fn=prompt_fn)
-        _ingest_one(kind, csv_path, scope, args.force)
+    # Doğrulama HİÇBİR yükleme başlamadan önce biter: sıra rides→status olduğu için
+    # bozuk bir status başlığı, aksi hâlde ~1M satırlık rides yüklemesinden sonra
+    # fark edilirdi. Tek dosya yolu da aynı sözleşmeyi paylaşsın diye tek akış.
+    for kind, csv_path in selected:
+        _check_schema(kind, csv_path)
+    for kind, csv_path in selected:
+        _run_ingest_for_kind(kind, csv_path, scope, args.force)
 
 
 def cmd_classify(args: argparse.Namespace) -> None:
@@ -361,7 +378,7 @@ def cmd_analyze(args: argparse.Namespace) -> None:
             paths.append(charts.chart_scenario_hourly(report, args.charts))
         if scan_report is not None:
             paths.append(charts.chart_threshold_scan(scan_report, args.charts))
-            paths.append(charts.chart_scenario_tradeoff(scan_report, args.charts))
+            paths.append(charts.chart_threshold_tradeoff(scan_report, args.charts))
         print("\nGrafikler:")
         for p in paths:
             print(f"  {p}")
