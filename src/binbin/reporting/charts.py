@@ -19,6 +19,7 @@ matplotlib.use("Agg")  # başsız (dosyaya) render; ekran gerektirmez
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.ticker import FuncFormatter  # noqa: E402
 
+from binbin.reporting.format import fmt_threshold as _fmt_threshold  # noqa: E402
 from binbin.reporting.format import tr_dec as _tr_dec  # noqa: E402
 from binbin.reporting.format import tr_int as _tr_int  # noqa: E402
 from binbin.reporting.format import GROUP_LABELS as _GROUP_LABELS  # noqa: E402
@@ -31,9 +32,8 @@ MUTED = "#898781"     # eksen/tick
 GRID = "#e1e0d9"      # hairline ızgara
 BASELINE = "#c3c2b7"  # spine
 BLUE = "#2a78d6"      # kategorik slot-1 (ana ölçü hue'su)
-BLUE_LIGHT = "#86b6ef"  # vurgu-dışı (de-emphasize)
 AQUA = "#189c6d"      # kategorik slot-2; beyaz etiket kontrastı için koyulaştırıldı (3,49:1)
-ORANGE = "#d97706"    # kategorik slot-3 (yalnız özel eşik)
+ORANGE = "#d97706"    # kategorik slot-3; eşik grafiklerinde Senaryo A kimliği
 
 
 def _apply_style() -> None:
@@ -65,9 +65,15 @@ def _new_fig(width: float, height: float):
     return fig, ax
 
 
+def _fig_title(fig, title: str, y: float | None = None) -> None:
+    """Şekil başlığı — TEK yer. Kopyalanırsa PNG'ler birbirinden sessizce sapar
+    (`format.py`/`GROUP_LABELS` ile aynı gerekçe)."""
+    fig.suptitle(title, x=0.012, y=y, ha="left", fontsize=15, fontweight="bold", color=INK)
+
+
 def _header(fig, ax, title: str, subtitle: str) -> None:
     """Sol hizalı Türkçe başlık + tek satır açıklayıcı alt başlık (ne gösteriyor)."""
-    fig.suptitle(title, x=0.012, ha="left", fontsize=15, fontweight="bold", color=INK)
+    _fig_title(fig, title)
     ax.set_title(subtitle, loc="left", fontsize=10.5, color=INK2, pad=6)
 
 
@@ -495,47 +501,44 @@ _TRADEOFF_PANELS = (
 )
 
 
-def chart_scenario_tradeoff(scan: dict, out_dir: Path) -> Path:
+def chart_threshold_tradeoff(scan: dict, out_dir: Path) -> Path:
     """Mevcut Kural / Senaryo A / Senaryo B — dört ölçüde yan yana karşılaştırma.
 
-    Küçük çoklu kullanılır, tek panelde gruplu çubuk DEĞİL: iki ölçü yüzde, ikisi
-    adet. Tek eksene bindirmek çift-eksen grafiği olur ve iki büyüklüğü
-    kıyaslanabilir gösterip yanıltırdı. Eksenler sıfırdan başlar — isabet
-    panelinin düz görünmesi grafiğin ASIL BULGUSUDUR, gizlenecek bir kusur değil.
+    Küçük çoklu, tek panelde gruplu çubuk DEĞİL: iki ölçü yüzde, ikisi adet; tek
+    eksene bindirmek çift-eksen grafiği olur ve iki büyüklüğü kıyaslanabilir
+    gösterip yanıltırdı. Eksenler sıfırdan başlar — isabet panelinin düz
+    görünmesi bulgunun kendisidir, gizlenecek bir kusur değil.
     """
-    baseline, rec, cons = scan["baseline_row"], scan["recommended"], scan["conservative"]
-    rows = (baseline, rec, cons)
+    rows = (scan["baseline_row"], scan["recommended"], scan["conservative"])
+    x = range(len(rows))
     labels = [
-        f"{name}\n{_tr_dec(r['duration_threshold'], 0)} sn / "
-        f"{_tr_dec(r['distance_threshold'], 0)} m"
+        f"{name}\n{_fmt_threshold(r['duration_threshold'])} sn / "
+        f"{_fmt_threshold(r['distance_threshold'])} m"
         for name, r in zip(("Mevcut Kural", "Senaryo A", "Senaryo B"), rows)
     ]
 
     fig, axes = plt.subplots(2, 2, figsize=(9, 6.2), layout="constrained")
     for ax, (title, key, is_pct) in zip(axes.flat, _TRADEOFF_PANELS):
         values = [r[key] for r in rows]
-        bars = ax.bar(range(3), values, color=_TRADEOFF_COLORS, width=0.6, zorder=3)
-        for rect, value in zip(bars, values):
-            ax.annotate(
-                _tr_pct(value) if is_pct else _tr_int(value),
-                (rect.get_x() + rect.get_width() / 2, value),
-                textcoords="offset points", xytext=(0, 4),
-                ha="center", fontsize=9.5, color=INK, fontweight="bold",
-            )
+        bars = ax.bar(x, values, color=_TRADEOFF_COLORS, width=0.6, zorder=3)
+        ax.bar_label(
+            bars,
+            labels=[_tr_pct(v) if is_pct else _tr_int(v) for v in values],
+            padding=4, color=INK, fontsize=9.5, fontweight="bold",
+        )
         ax.set_title(title, loc="left", fontsize=11, color=INK, fontweight="bold", pad=4)
-        ax.set_xticks(range(3))
+        ax.set_xticks(list(x))
         ax.set_xticklabels(labels, fontsize=8.2, color=MUTED)
-        ax.set_ylim(0, max(values) * 1.24)
+        ax.set_ylim(0, (max(values) or 1) * 1.24)
         ax.set_yticklabels([])
         _style_axes(ax, value_axis="y")
 
-    fig.suptitle(
-        "Senaryo Karşılaştırması — Mevcut Kural / A / B",
-        x=0.012, ha="left", fontsize=15, fontweight="bold", color=INK,
-    )
+    _fig_title(fig, "Senaryo Karşılaştırması — Mevcut Kural / A / B")
+    precisions = [r["precision_pct"] for r in rows]
+    spread = max(precisions) - min(precisions)
     fig.supxlabel(
-        "İsabet üç senaryoda da aynı: eşik teşhisi iyileştirmiyor, "
-        "yalnız kapsamı ve saha yükünü değiştiriyor.",
+        f"İsabet üç senaryoda {_tr_pct(min(precisions))}–{_tr_pct(max(precisions))} "
+        f"arasında ({_tr_dec(spread, 1)} puan fark); değişen kapsam ve saha yükü.",
         x=0.012, ha="left", fontsize=9.5, color=INK2,
     )
     return _save(fig, out_dir, "scenario_tradeoff.png")

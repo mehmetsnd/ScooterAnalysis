@@ -113,3 +113,15 @@ def test_hourly_legend_covers_scenario_missing_from_first_panel(tmp_path, monkey
     labels = captured[0]
     expected = [report["scenarios"][k]["label"] for k in keys]
     assert labels == expected
+
+
+@pytest.mark.parametrize(
+    "chart_name", ["chart_threshold_scan", "chart_threshold_tradeoff"]
+)
+def test_threshold_chart_writes_png(chart_name, tmp_path):
+    """Eşik grafikleri senaryo raporu değil `scan` dict'i alır; kapsam dışı kalmasınlar."""
+    from binbin.core.threshold_scan import scan_thresholds
+    from binbin.reporting import charts
+
+    path = getattr(charts, chart_name)(scan_thresholds([]), tmp_path)
+    assert path.exists() and path.stat().st_size > 0
