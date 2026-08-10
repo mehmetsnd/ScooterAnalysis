@@ -156,43 +156,6 @@ def chart_scenario_overview(report: dict, out_dir: Path) -> Path:
     return _save(fig, out_dir, "scenario_overview.png")
 
 
-def chart_scenario_transitions(report: dict, out_dir: Path) -> Path:
-    comparisons = report["comparisons"]
-    if not comparisons:
-        return _empty_chart(
-            "Senaryolar Arası Geçişler", "Karşılaştırma için özel eşik verilmedi",
-            out_dir, "scenario_transitions.png",
-        )
-    labels = [f"{c['from_label']}\n→ {c['to_label']}" for c in comparisons]
-    lost = [c["failed_to_success"] for c in comparisons]
-    gained = [c["success_to_failed"] for c in comparisons]
-    excluded = [c["failed_to_unevaluated"] for c in comparisons]
-    x = list(range(len(labels)))
-    width = 0.24
-    fig, ax = _new_fig(11, 5.8)
-    left = ax.bar([v - width for v in x], lost, width, color=BLUE,
-                  label="Başarısız → başarılı")
-    right = ax.bar(x, gained, width, color=ORANGE,
-                   label="Başarılı → başarısız")
-    missing = ax.bar([v + width for v in x], excluded, width, color=MUTED,
-                     label="Başarısız → değerlendirme dışı")
-    ax.bar_label(left, labels=[_tr_int(v) for v in lost], padding=4, color=INK2, fontsize=9)
-    ax.bar_label(right, labels=[_tr_int(v) for v in gained], padding=4, color=INK2, fontsize=9)
-    ax.bar_label(missing, labels=[_tr_int(v) for v in excluded], padding=4, color=INK2, fontsize=9)
-    ax.set_xticks(x, labels)
-    ax.set_ylabel("Sürüş sayısı")
-    ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: _tr_int(value)))
-    ax.margins(y=0.25)
-    _style_axes(ax, value_axis="y")
-    ax.legend(frameon=True, edgecolor=GRID, loc="upper right")
-    net = " · ".join(
-        f"{c['to_label']}: {c['failed_count_delta']:+,} ({c['failure_rate_pp_delta']:+.1f} puan)"
-        for c in comparisons
-    ).replace(",", ".")
-    _header(fig, ax, "Senaryolar Arası Durum Geçişleri", net)
-    return _save(fig, out_dir, "scenario_transitions.png")
-
-
 def chart_scenario_causes(report: dict, out_dir: Path) -> Path:
     scenarios = _scenarios(report)
     values = []
@@ -520,3 +483,59 @@ def chart_threshold_scan(scan: dict, out_dir: Path) -> Path:
         f"{_tr_dec(baseline['distance'], 0)} m referans (kesikli çizgi)",
     )
     return _save(fig, out_dir, "threshold_scan.png")
+
+
+# Senaryo kimliği threshold_scan.png ile aynı: A turuncu (yıldız), B yeşil (elmas).
+_TRADEOFF_COLORS = (BLUE, ORANGE, AQUA)
+_TRADEOFF_PANELS = (
+    ("İsabet", "precision_pct", True),
+    ("Kapsam", "recall_pct", True),
+    ("İşaretlenen sürüş", "flagged", False),
+    ("Boşa görev", "wasted_missions", False),
+)
+
+
+def chart_scenario_tradeoff(scan: dict, out_dir: Path) -> Path:
+    """Mevcut Kural / Senaryo A / Senaryo B — dört ölçüde yan yana karşılaştırma.
+
+    Küçük çoklu kullanılır, tek panelde gruplu çubuk DEĞİL: iki ölçü yüzde, ikisi
+    adet. Tek eksene bindirmek çift-eksen grafiği olur ve iki büyüklüğü
+    kıyaslanabilir gösterip yanıltırdı. Eksenler sıfırdan başlar — isabet
+    panelinin düz görünmesi grafiğin ASIL BULGUSUDUR, gizlenecek bir kusur değil.
+    """
+    baseline, rec, cons = scan["baseline_row"], scan["recommended"], scan["conservative"]
+    rows = (baseline, rec, cons)
+    labels = [
+        f"{name}\n{_tr_dec(r['duration_threshold'], 0)} sn / "
+        f"{_tr_dec(r['distance_threshold'], 0)} m"
+        for name, r in zip(("Mevcut Kural", "Senaryo A", "Senaryo B"), rows)
+    ]
+
+    fig, axes = plt.subplots(2, 2, figsize=(9, 6.2), layout="constrained")
+    for ax, (title, key, is_pct) in zip(axes.flat, _TRADEOFF_PANELS):
+        values = [r[key] for r in rows]
+        bars = ax.bar(range(3), values, color=_TRADEOFF_COLORS, width=0.6, zorder=3)
+        for rect, value in zip(bars, values):
+            ax.annotate(
+                _tr_pct(value) if is_pct else _tr_int(value),
+                (rect.get_x() + rect.get_width() / 2, value),
+                textcoords="offset points", xytext=(0, 4),
+                ha="center", fontsize=9.5, color=INK, fontweight="bold",
+            )
+        ax.set_title(title, loc="left", fontsize=11, color=INK, fontweight="bold", pad=4)
+        ax.set_xticks(range(3))
+        ax.set_xticklabels(labels, fontsize=8.2, color=MUTED)
+        ax.set_ylim(0, max(values) * 1.24)
+        ax.set_yticklabels([])
+        _style_axes(ax, value_axis="y")
+
+    fig.suptitle(
+        "Senaryo Karşılaştırması — Mevcut Kural / A / B",
+        x=0.012, ha="left", fontsize=15, fontweight="bold", color=INK,
+    )
+    fig.supxlabel(
+        "İsabet üç senaryoda da aynı: eşik teşhisi iyileştirmiyor, "
+        "yalnız kapsamı ve saha yükünü değiştiriyor.",
+        x=0.012, ha="left", fontsize=9.5, color=INK2,
+    )
+    return _save(fig, out_dir, "scenario_tradeoff.png")

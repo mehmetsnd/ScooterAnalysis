@@ -352,8 +352,6 @@ def cmd_analyze(args: argparse.Namespace) -> None:
             charts.chart_scenario_causes(report, args.charts),
             charts.chart_scenario_control(report, args.charts),
         ]
-        if report["comparisons"]:
-            paths.append(charts.chart_scenario_transitions(report, args.charts))
         if args.false_fault:
             paths.append(charts.chart_scenario_false_fault(report, args.charts))
         if args.detay:
@@ -363,6 +361,7 @@ def cmd_analyze(args: argparse.Namespace) -> None:
             paths.append(charts.chart_scenario_hourly(report, args.charts))
         if scan_report is not None:
             paths.append(charts.chart_threshold_scan(scan_report, args.charts))
+            paths.append(charts.chart_scenario_tradeoff(scan_report, args.charts))
         print("\nGrafikler:")
         for p in paths:
             print(f"  {p}")
