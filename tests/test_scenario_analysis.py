@@ -3,6 +3,8 @@
 from datetime import datetime, timedelta
 
 from binbin.core.scenario_analysis import (
+    CURRENT_DISTANCE_M,
+    CURRENT_RULE,
     FailureScenario,
     ScenarioStatus,
     analyze_scenarios,
@@ -86,6 +88,16 @@ def test_scenario_definitions_have_meaningful_keys_and_labels():
     scenarios = build_scenarios((100, 45))
     assert [s.key for s in scenarios] == ["current_rule", "custom_rule"]
     assert [s.label for s in scenarios] == ["Mevcut Kural", "Özel Kural"]
+
+
+def test_current_rule_is_shared_as_a_single_object():
+    """data/assess.py bu nesneyi yeniden kullanır; kopyalanırsa iki motor ayrışır."""
+    assert build_scenarios(None)[0] is CURRENT_RULE
+
+
+def test_current_rule_distance_stays_below_healthy_proof_threshold():
+    """Bozulursa assess_all ile analyze aynı sürüşe farklı verdict verir."""
+    assert CURRENT_DISTANCE_M < 200.0
 
 
 def test_custom_only_missing_measurement_is_unevaluated():

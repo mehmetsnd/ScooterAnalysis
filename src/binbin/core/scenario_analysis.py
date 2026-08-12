@@ -74,18 +74,25 @@ class FailureScenario:
         return ScenarioStatus.FAILED if failed else ScenarioStatus.SUCCESS
 
 
+# Tek nesne: `analyze` senaryo listesi ve `data/assess.py` bunu paylaşır.
+CURRENT_RULE = FailureScenario(
+    key="current_rule",
+    label="Mevcut Kural",
+    duration_threshold=CURRENT_DURATION_SEC,
+    distance_threshold=CURRENT_DISTANCE_M,
+    include_source_failure=True,
+)
+
+# Mesafe eşiği, false_fault.assess_ride'ın healthy_proof eşiğinin (200 m) altında
+# kalmalı; aksi hâlde assess_all ile analyze aynı sürüşe farklı verdict verir.
+# threshold_scan.py aynı invaryantı ızgara için assert eder.
+assert CURRENT_DISTANCE_M < 200.0
+
+
 def build_scenarios(
     custom: tuple[float, float] | None,
 ) -> tuple[FailureScenario, ...]:
-    scenarios = [
-        FailureScenario(
-            key="current_rule",
-            label="Mevcut Kural",
-            duration_threshold=CURRENT_DURATION_SEC,
-            distance_threshold=CURRENT_DISTANCE_M,
-            include_source_failure=True,
-        )
-    ]
+    scenarios = [CURRENT_RULE]
     if custom is not None:
         duration, distance = map(float, custom)
         if not isfinite(duration) or not isfinite(distance) or duration <= 0 or distance <= 0:
