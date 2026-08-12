@@ -7,6 +7,7 @@ hata, engine tekil/cached) ve mimari sözleşme (Repository Protocol uyumu, DIP)
 
 import pytest
 
+from binbin.core.scenario_analysis import CURRENT_DISTANCE_M, CURRENT_DURATION_SEC
 from binbin.data.ingest import (
     _FLEET_STATUS_EVENT_PARTITION_NAME_RE,
     _PARTITION_NAME_RE,
@@ -17,6 +18,8 @@ from binbin.data.engine import (
     _CITY_ALIAS,
     _database_url,
     _scope_clause,
+    current_rule_params,
+    current_rule_sql,
     field_signal_join_sql,
     get_engine,
 )
@@ -142,6 +145,43 @@ def test_field_signal_join_thresholds_guard():
 def test_field_signal_join_bilinmeyen_guard_reddedilir():
     with pytest.raises(ValueError, match="Bilinmeyen candidate_guard"):
         field_signal_join_sql(candidate_guard="typo")
+
+
+# --- current_rule_sql: Mevcut Kural'ın SQL karşılığı -------------------------
+def test_current_rule_sql_inlines_thresholds_as_literals():
+    """Bind-param olsaydı `idx_ride_unclassified` kısmi indeksi ölürdü: planlayıcı
+    implikasyonu kanıtlayamıyor (ölçüldü: 17.653 → 53.273 maliyet, seq scan)."""
+    sql = current_rule_sql()
+    assert ":cur_max_dur" not in sql and ":cur_max_dist" not in sql
+    assert f"< {CURRENT_DURATION_SEC}" in sql and f"< {CURRENT_DISTANCE_M}" in sql
+
+
+def test_current_rule_sql_treats_unmeasured_ride_as_not_failed():
+    """Canlı motor ölçüm eksikse SUCCESS der; guard olmadan NULL sessizce ayrışır."""
+    sql = current_rule_sql()
+    assert "duration_sec IS NOT NULL" in sql
+    assert "distance_m IS NOT NULL" in sql
+
+
+def test_current_rule_sql_includes_source_failure():
+    assert "outcome = 'BASARISIZ_HARD'" in current_rule_sql()
+
+
+@pytest.mark.parametrize("alias", ["r", "ride", "seq"])
+def test_current_rule_sql_accepts_allowlisted_alias(alias):
+    assert f"{alias}.outcome" in current_rule_sql(alias)
+
+
+def test_current_rule_sql_rejects_unknown_alias():
+    with pytest.raises(ValueError, match="Bilinmeyen alias"):
+        current_rule_sql("r; DROP TABLE ride")
+
+
+def test_current_rule_params_match_core_constants():
+    """Guard ile WHERE ayrışırsa guard tam eşleşme olmaktan çıkar."""
+    p = current_rule_params()
+    assert p["fsig_max_dur"] == CURRENT_DURATION_SEC
+    assert p["fsig_max_dist"] == CURRENT_DISTANCE_M
 
 
 # --- Config: DATABASE_URL yoksa anlaşılır RuntimeError ----------------------

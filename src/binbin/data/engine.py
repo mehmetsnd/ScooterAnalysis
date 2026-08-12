@@ -18,6 +18,7 @@ from binbin.config import (
     DB_POOL_RECYCLE_SEC,
     FIELD_SIGNAL_WINDOW_POST_MIN,
 )
+from binbin.core.scenario_analysis import CURRENT_DISTANCE_M, CURRENT_DURATION_SEC
 from binbin.data.repository import AnalysisScope
 
 
@@ -113,6 +114,41 @@ def field_signal_join_sql(candidate_guard: Optional[str] = None) -> str:
         LIMIT 1
     ) fsig ON true
     """
+
+
+_CURRENT_RULE_ALIASES = ("r", "ride", "seq")
+
+
+def current_rule_sql(alias: str = "r") -> str:
+    """Mevcut Kural'ın SQL karşılığı; classify_all ve assess_all paylaşır.
+    Canlı karşılığı `scenario_analysis.FailureScenario.status()`.
+
+    Eşikler LİTERAL yazılır (bind-param DEĞİL): `idx_ride_unclassified` kısmi
+    indeksinin predikatı da literaldir ve planlayıcı bind-param'la implikasyonu
+    kanıtlayamayıp indeksi kullanmaz (ölçüldü: 17.653 → 53.273 maliyet, seq scan).
+    Değerler kullanıcıdan değil core sabitinden gelir; SQL güvenlik sözleşmesi
+    kullanıcı girdisi içindir.
+    """
+    if alias not in _CURRENT_RULE_ALIASES:
+        raise ValueError(
+            f"Bilinmeyen alias: {alias!r} (izin verilen: {_CURRENT_RULE_ALIASES})"
+        )
+    return (
+        f"({alias}.outcome = 'BASARISIZ_HARD'"
+        f" OR ({alias}.duration_sec IS NOT NULL AND {alias}.distance_m IS NOT NULL"
+        f" AND {alias}.duration_sec < {float(CURRENT_DURATION_SEC)}"
+        f" AND {alias}.distance_m < {float(CURRENT_DISTANCE_M)}))"
+    )
+
+
+def current_rule_params() -> dict:
+    """`field_signal_join_sql(candidate_guard="thresholds")` guard'ının eşikleri.
+    `current_rule_sql` ile aynı sabitten okunur; ayrışırlarsa guard tam eşleşme
+    olmaktan çıkar."""
+    return {
+        "fsig_max_dur": float(CURRENT_DURATION_SEC),
+        "fsig_max_dist": float(CURRENT_DISTANCE_M),
+    }
 
 
 def _scope_clause(scope: Optional[AnalysisScope]) -> tuple[str, dict]:
