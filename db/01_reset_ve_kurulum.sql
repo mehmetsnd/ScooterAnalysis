@@ -234,8 +234,14 @@ CREATE TABLE ride (
     CONSTRAINT ck_end_after_start CHECK (end_time IS NULL OR end_time >= start_time),
     CONSTRAINT ck_category_needs_source CHECK (
         failure_category IS NULL OR classification_source <> 'NONE'),
+    -- Kategori taşıyabilen satır = Mevcut Kural'ın başarısız saydığı satır.
+    -- Eşikler core/scenario_analysis.CURRENT_DURATION_SEC/CURRENT_DISTANCE_M ile
+    -- aynı olmalı; senkron tests/test_persisted_alignment.py ile kilitli.
     CONSTRAINT ck_success_has_no_failure CHECK (
-        outcome <> 'BASARILI' OR (failure_category IS NULL AND failure_reason IS NULL))
+        outcome <> 'BASARILI'
+        OR (duration_sec IS NOT NULL AND distance_m IS NOT NULL
+            AND duration_sec < 120 AND distance_m < 60)
+        OR (failure_category IS NULL AND failure_reason IS NULL))
 ) PARTITION BY RANGE (start_time);
 
 COMMENT ON COLUMN ride.duration_sec IS
@@ -315,8 +321,13 @@ CREATE INDEX idx_ride_failed_vehicle  ON ride (vehicle_id, start_time)
     WHERE outcome = 'BASARISIZ_HARD';
 CREATE INDEX idx_ride_failed_category ON ride (city_id, failure_category)
     WHERE outcome = 'BASARISIZ_HARD';
+-- classify_all'ın LIMIT'li batch döngüsü buradan okur; predikat Mevcut Kural'la
+-- aynı kalmalı, yoksa her batch tam tabloya düşer.
 CREATE INDEX idx_ride_unclassified    ON ride (city_id, start_time)
-    WHERE outcome = 'BASARISIZ_HARD' AND failure_category IS NULL;
+    WHERE failure_category IS NULL AND classified_at IS NULL
+      AND (outcome = 'BASARISIZ_HARD'
+           OR (duration_sec IS NOT NULL AND distance_m IS NOT NULL
+               AND duration_sec < 120 AND distance_m < 60));
 
 CREATE INDEX idx_ride_subregion  ON ride (sub_region_id, outcome);
 CREATE INDEX idx_ride_end_reason ON ride (end_reason_id) WHERE end_reason_id IS NOT NULL;

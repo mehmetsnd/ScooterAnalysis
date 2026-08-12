@@ -56,18 +56,34 @@ def test_vehicle_status_seed_marks_low_battery_as_non_signal():
     assert "'TEKNIK'" not in low_battery_line
 
 
-def test_classify_excludes_out_of_content_like_analysis_timeline():
-    """Kalıcı sınıflandırma ile canlı analiz AYNI kümeyi görmeli.
-
-    OUT_OF_CONTENT sürüşler `analysis_timeline`'da dışlanır; `classify_all` de
-    dışlamazsa iki çıktı farklı "kaç başarısız sürüş" sayısı basar (gerçek DB'de
-    52.755 vs 52.754 farkı bu yüzden oluşmuştu).
-    """
-    source = (ROOT / "src" / "binbin" / "data" / "classify.py").read_text(encoding="utf-8")
-    timeline = (ROOT / "src" / "binbin" / "data" / "queries.py").read_text(encoding="utf-8")
+def test_write_path_excludes_out_of_content_like_analysis_timeline():
+    """Üç tüketici de AYNI kümeyi görmeli. Filtre LEAD'den önce koştuğu için
+    eksikliği yalnız satır sayısını değil, "sonraki sürüş"ü de kaydırır."""
     guard = "NOT ('OUT_OF_CONTENT' = ANY(r.data_quality_flags))"
-    assert guard in source
-    assert guard in timeline
+    for name in ("classify.py", "assess.py", "queries.py"):
+        source = (ROOT / "src" / "binbin" / "data" / name).read_text(encoding="utf-8")
+        assert guard in source, name
+
+
+def test_alignment_migration_is_idempotent_and_lock_bounded():
+    sql = (ROOT / "db" / "08_align_persisted_with_current_rule.sql").read_text(
+        encoding="utf-8"
+    )
+    assert "SET LOCAL lock_timeout" in sql and "SET LOCAL statement_timeout" in sql
+    assert sql.count("BEGIN;") == 1 and sql.count("COMMIT;") == 1
+    assert "pg_constraint" in sql and "DROP CONSTRAINT IF EXISTS" in sql
+    assert "-- DOĞRULAMA" in sql
+    # Miras kısıt: işlem daima parent `ride` üzerinde, partition'a dokunulmaz.
+    assert "ride_2026_" not in sql
+    assert "DROP TABLE" not in sql.upper()
+
+
+def test_alignment_migration_also_fixed_the_clean_install():
+    """CLAUDE.md: 07+ migration, ama 01/02/06'daki ilk kurulum aynı anda düzeltilir."""
+    d01 = (ROOT / "db" / "01_reset_ve_kurulum.sql").read_text(encoding="utf-8")
+    d02 = (ROOT / "db" / "02_false_fault.sql").read_text(encoding="utf-8")
+    assert "duration_sec < 120" in d01
+    assert "WHERE r.outcome = 'BASARISIZ_HARD' AND ci.is_test = false" not in d02
 
 
 def test_mongo_distance_is_the_only_ingest_distance_source():

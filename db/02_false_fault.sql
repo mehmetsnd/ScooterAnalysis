@@ -192,7 +192,9 @@ JOIN false_fault_assessment a
 JOIN sub_region sr ON sr.sub_region_id = r.sub_region_id
 JOIN city    ci ON ci.city_id = r.city_id
 JOIN country co ON co.country_id = ci.country_id
-WHERE r.outcome = 'BASARISIZ_HARD' AND ci.is_test = false
+-- outcome daraltması YOK: kümeyi false_fault_assessment ile yapılan INNER JOIN
+-- tanımlar; o tablo zaten Mevcut Kural'a göre doldurulur (bkz. db/08).
+WHERE ci.is_test = false
 GROUP BY co.name, ci.name, sr.source_sub_region_id, sr.name;
 
 COMMENT ON VIEW v_false_fault_by_subregion IS
