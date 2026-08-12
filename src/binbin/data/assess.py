@@ -11,10 +11,40 @@ from sqlalchemy import Engine, text
 
 from binbin.config import ASSESSOR_VERSION
 from binbin.core.false_fault import assess_ride
-from binbin.data.engine import _scope_clause, field_signal_join_sql
+from binbin.core.scenario_analysis import CURRENT_RULE, ScenarioStatus
+from binbin.data.engine import (
+    _scope_clause,
+    current_rule_params,
+    current_rule_sql,
+    field_signal_join_sql,
+)
 from binbin.data.repository import AnalysisScope
 from binbin.domain.enums import RideOutcome
 from binbin.domain.models import Ride
+
+
+def _delete_stale_assessments(conn, clause: str, params: dict) -> int:
+    """Aday kümesinden düşmüş değerlendirmeleri siler (refresh yolu). UPSERT tek
+    başına yetmez: kural daraldığında eski satırlar tabloda kalır."""
+    return conn.execute(
+        text(
+            f"""
+            DELETE FROM false_fault_assessment a
+            USING ride r, city ci
+            WHERE r.ride_id = a.ride_id
+              AND r.start_time = a.ride_start_time
+              AND ci.city_id = r.city_id
+              {clause}
+              AND NOT (
+                  ci.is_test = false
+                  AND r.outcome IN ('BASARILI', 'BASARISIZ_HARD')
+                  AND NOT ('OUT_OF_CONTENT' = ANY(r.data_quality_flags))
+                  AND {current_rule_sql("r")}
+              )
+            """
+        ),
+        params,
+    ).rowcount
 
 
 def assess_all(
@@ -42,37 +72,45 @@ def assess_all(
                ON a.ride_id = seq.ride_id AND a.ride_start_time = seq.start_time"""
     )
     incremental_where = (
-        "" if refresh else " AND (a.ride_id IS NULL OR a.verdict = 'DEGERLENDIRILEMEDI')"
+        ""
+        if refresh
+        else " AND (a.ride_id IS NULL"
+             " OR a.verdict = 'DEGERLENDIRILEMEDI'"
+             " OR a.assessor_version <> :version)"
     )
     timeline_sql = text(
         f"""
         WITH scoped AS (
             SELECT r.ride_id, r.start_time, r.end_time, r.vehicle_id, r.outcome,
-                   r.distance_m, r.end_reason_id, r.end_message,
+                   r.duration_sec, r.distance_m, r.end_reason_id, r.end_message,
                    f.rating, f.comment_text,
                    (fsig.field_signal_reason_id IS NOT NULL) AS field_fault
             FROM ride r
             JOIN city ci ON ci.city_id = r.city_id
             LEFT JOIN feedback f
                    ON f.ride_id = r.ride_id AND f.ride_start_time = r.start_time
-            -- ADAY GUARD'I ("outcome"): field_fault yalnız aşağıdaki final WHERE'de
-            -- seq.outcome='BASARISIZ_HARD' satırlarında okunur (satır ~140). Bu TAM
-            -- eşleşmedir (analyze'deki gibi üstküme değil) — assess_all'da senaryo
-            -- eşiği kavramı yok. Ölçüldü: assess --refresh 51,9 sn → bkz. commit notu.
-            {field_signal_join_sql(candidate_guard="outcome")}
-            WHERE ci.is_test = false {clause}
+            -- ADAY GUARD'I ("thresholds"): guard ile final WHERE aynı eşikleri
+            -- `current_rule_params()`ten okur, bu yüzden TAM EŞLEŞMEDİR.
+            {field_signal_join_sql(candidate_guard="thresholds")}
+            WHERE ci.is_test = false
+              AND r.outcome IN ('BASARILI', 'BASARISIZ_HARD')
+              -- OOC ve outcome filtreleri LEAD'den ÖNCE koşmalı; yoksa "sonraki
+              -- sürüş" analysis_timeline'dakinden farklı satır olur.
+              AND NOT ('OUT_OF_CONTENT' = ANY(r.data_quality_flags))
+              {clause}
         ),
         seq AS (
             SELECT *,
-                LEAD(ride_id)    OVER w AS next_ride_id,
-                LEAD(start_time) OVER w AS next_start_time,
-                LEAD(outcome)    OVER w AS next_outcome,
-                LEAD(distance_m) OVER w AS next_distance_m
+                LEAD(ride_id)      OVER w AS next_ride_id,
+                LEAD(start_time)   OVER w AS next_start_time,
+                LEAD(outcome)      OVER w AS next_outcome,
+                LEAD(duration_sec) OVER w AS next_duration_sec,
+                LEAD(distance_m)   OVER w AS next_distance_m
             FROM scoped
-            WINDOW w AS (PARTITION BY vehicle_id ORDER BY start_time)
+            WINDOW w AS (PARTITION BY vehicle_id ORDER BY start_time, ride_id)
         )
         SELECT seq.* FROM seq{incremental_join}
-        WHERE seq.outcome = 'BASARISIZ_HARD'{incremental_where}
+        WHERE {current_rule_sql("seq")}{incremental_where}
         """
     )
     insert_sql = text(
@@ -109,7 +147,12 @@ def assess_all(
     )
     assessed = 0
     with engine.begin() as conn:
-        rows = conn.execute(timeline_sql, sparams).mappings().all()
+        params = {**sparams, **current_rule_params()}
+        if refresh:
+            _delete_stale_assessments(conn, clause, params)
+        else:
+            params["version"] = version
+        rows = conn.execute(timeline_sql, params).mappings().all()
         payload = []
         for row in rows:
             ride = Ride(
@@ -127,6 +170,13 @@ def assess_all(
             )
             next_ride = None
             if row["next_ride_id"] is not None:
+                # Sonraki sürüşün outcome'u Mevcut Kural'a göre yeniden yazılır;
+                # canlı motorun `_next_ride`i de aynısını yapar.
+                next_status = CURRENT_RULE.status(
+                    row["next_outcome"],
+                    row["next_duration_sec"],
+                    row["next_distance_m"],
+                )
                 next_ride = Ride(
                     ride_id=row["next_ride_id"],
                     source_ref="",
@@ -134,7 +184,11 @@ def assess_all(
                     city_id=0,
                     user_ref="",
                     start_time=row["next_start_time"],
-                    outcome=RideOutcome(row["next_outcome"]),
+                    outcome=(
+                        RideOutcome.BASARILI
+                        if next_status is ScenarioStatus.SUCCESS
+                        else RideOutcome.BASARISIZ_HARD
+                    ),
                     distance_m=float(row["next_distance_m"])
                     if row["next_distance_m"] is not None
                     else None,

@@ -10,10 +10,48 @@ from sqlalchemy import Engine, text
 
 from binbin.config import CLASSIFIER_VERSION
 from binbin.core.classifier import classify_ride
-from binbin.data.engine import _scope_clause, field_signal_join_sql
+from binbin.core.ratios import enum_or_none
+from binbin.data.engine import (
+    _scope_clause,
+    current_rule_params,
+    current_rule_sql,
+    field_signal_join_sql,
+)
 from binbin.data.repository import AnalysisScope
-from binbin.domain.enums import FailureCategory, FailureReason, RideOutcome
+from binbin.domain.enums import (
+    FailureCategory,
+    FailureReason,
+    PaymentStatus,
+    RideOutcome,
+)
 from binbin.domain.models import Ride
+
+
+def _require_alignment_migration(engine: Engine) -> None:
+    """db/08 uygulanmadıysa reset'ten ÖNCE durur.
+
+    Reset kendi transaction'ında COMMIT olur; migration yoksa sonraki UPDATE
+    CheckViolation verir ve ride.failure_category tablo genelinde silinmiş kalır.
+    """
+    with engine.begin() as conn:
+        migrated = conn.execute(
+            text(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                     WHERE conrelid = 'public.ride'::regclass
+                       AND conname  = 'ck_success_has_no_failure'
+                       AND pg_get_constraintdef(oid) LIKE '%%duration_sec%%'
+                ) AS migrated
+                """
+            )
+        ).mappings().all()[0]["migrated"]
+    if not migrated:
+        raise RuntimeError(
+            "ck_success_has_no_failure eski tanımda: db/08_align_persisted_with_"
+            "current_rule.sql çalıştırılmadan classify --refresh yapılamaz "
+            "(reset commit olur, yazma CheckViolation ile patlar)."
+        )
 
 
 def _reset_classification(engine: Engine, clause: str, sparams: dict) -> int:
@@ -36,7 +74,7 @@ def _reset_classification(engine: Engine, clause: str, sparams: dict) -> int:
                     classifier_version    = NULL
                 FROM city ci
                 WHERE ci.city_id = ride.city_id
-                  AND ride.outcome = 'BASARISIZ_HARD'
+                  AND {current_rule_sql("ride")}
                   AND ci.is_test = false {clause}
                   AND (ride.classified_at IS NOT NULL
                        OR ride.failure_category IS NOT NULL)
@@ -64,19 +102,25 @@ def classify_all(
     N satırı çeker, UPDATE sonrası da eşleşirler); reset bunu yapısal olarak engeller.
     """
     clause, sparams = _scope_clause(scope)
+    rule_params = current_rule_params()
     if refresh:
-        _reset_classification(engine, clause, sparams)
+        _require_alignment_migration(engine)
+        _reset_classification(engine, clause, {**sparams, **rule_params})
     select_sql = text(
         f"""
         SELECT r.ride_id, r.start_time, r.end_message, f.comment_text,
+               r.triggered_regulation_id, r.unlock_ack, r.start_battery_pct,
+               r.connection_lost, r.motor_error_code, r.bms_error_code,
+               r.user_cancelled, r.payment_status::text AS payment_status,
                fsig.field_category::text AS field_category,
                fsig.field_reason::text AS field_reason
         FROM ride r
         JOIN city ci ON ci.city_id = r.city_id
         LEFT JOIN feedback f
                ON f.ride_id = r.ride_id AND f.ride_start_time = r.start_time
-        {field_signal_join_sql()}
-        WHERE r.outcome = 'BASARISIZ_HARD'
+        {field_signal_join_sql(candidate_guard="thresholds")}
+        WHERE {current_rule_sql("r")}
+          AND r.outcome IN ('BASARILI', 'BASARISIZ_HARD')
           AND r.failure_category IS NULL
           AND r.classified_at IS NULL
           AND ci.is_test = false
@@ -105,7 +149,7 @@ def classify_all(
     while True:
         with engine.begin() as conn:
             rows = conn.execute(
-                select_sql, {**sparams, "batch": batch_size}
+                select_sql, {**sparams, **rule_params, "batch": batch_size}
             ).mappings().all()
             if not rows:
                 break
@@ -118,8 +162,20 @@ def classify_all(
                     city_id=0,
                     user_ref="",
                     start_time=row["start_time"],
+                    # Hardcode kasıtlı: classify_ride yalnız BASARISIZ_HARD'a
+                    # kategori atar. Canlı motor da aynısını yapar.
                     outcome=RideOutcome.BASARISIZ_HARD,
                     end_message=row["end_message"],
+                    triggered_regulation_id=row["triggered_regulation_id"],
+                    unlock_ack=row["unlock_ack"],
+                    start_battery_pct=row["start_battery_pct"],
+                    connection_lost=row["connection_lost"],
+                    motor_error_code=row["motor_error_code"],
+                    bms_error_code=row["bms_error_code"],
+                    user_cancelled=row["user_cancelled"],
+                    payment_status=enum_or_none(
+                        PaymentStatus, row["payment_status"]
+                    ),
                 )
                 result = classify_ride(
                     ride,
