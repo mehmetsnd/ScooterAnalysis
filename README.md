@@ -19,7 +19,7 @@ değil **"ŞÜPHELİ"** — veri kesin hüküm veremez.
   sqlalchemy, psycopg, matplotlib, python-dotenv, pytest. (Pandas KULLANILMAZ — büyük
   CSV RAM'e alınmaz, `COPY` ile stream edilir.) Proje kurulmaz, `PYTHONPATH=src` ile çalışır.
 - Python komutları daima `.venv` ile: `.\.venv\Scripts\python.exe -m pytest tests -q`.
-- DB şeması `db/01`→`db/07` sırasıyla PostgreSQL'de elle kurulur (aylık partition'lı
+- DB şeması `db/01`→`db/08` sırasıyla PostgreSQL'de elle kurulur (aylık partition'lı
   `ride`/`fleet_status_event`, bileşik FK'ler, view'ler, kural kitabı seed'i).
 - `.env.example` → `.env` kopyalayıp `DATABASE_URL`'i doldur.
 - Ham CSV `data_raw/` klasörüne konur (`.gitignore`'da).
@@ -129,6 +129,7 @@ db/              # PostgreSQL şeması (elle çalıştırılır)
 ├── 05_post_data_reset_check.sql
 ├── 06_vehicle_status.sql
 ├── 07_signal_rulebook_revision.sql
+├── 08_align_persisted_with_current_rule.sql
 ```
 
 Veri kaynağı soyutlaması `repository.py` Protocol'ü ile tanımlanır; tek somut

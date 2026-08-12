@@ -146,7 +146,9 @@ Write-Host "`n========== ADIM 2/4: CLASSIFY (siniflandirma) ==========" -Foregro
 if ($LASTEXITCODE -ne 0) { Write-Host "CLASSIFY BASARISIZ!" -ForegroundColor Red; exit 1 }
 
 Write-Host "`n========== ADIM 3/4: ASSESS (sahte ariza degerlendirmesi) ==========" -ForegroundColor Cyan
-& $py -m binbin.cli assess @scopeArgs
+# --refresh: ADIM 2 gibi. Artimli mod aday kumesinden DUSEN satirlari silmez;
+# bayat degerlendirmeler kalir ve v_false_fault_by_subregion onlari sayar.
+& $py -m binbin.cli assess --refresh @scopeArgs
 if ($LASTEXITCODE -ne 0) { Write-Host "ASSESS BASARISIZ!" -ForegroundColor Red; exit 1 }
 
 Write-Host "`n========== ADIM 4/4: ANALYZE (analiz + grafikler) ==========" -ForegroundColor Cyan
