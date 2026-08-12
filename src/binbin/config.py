@@ -29,13 +29,14 @@ DEFAULT_SCOPE = Scope(
 
 UNRESTRICTED_SCOPE = Scope()
 
-# Algoritma değişince "v2" yapılır; eski veri damgasıyla ayrışır.
-# v2 (2026-08-05): kelime kural kitabı ölçümle revize edildi — `normalize()` artık
-# kesme işaretini siler, ters-korelasyonlu kelimeler (fren ailesi, kamera, uygulama,
-# 6 km…) elendi, ölçümü geçen yazım varyantları eklendi. Hem sınıflandırma hem
-# kanıt üretimi değiştiği için İKİ damga da yükseldi (bkz. core/keywords.py).
-CLASSIFIER_VERSION = "v3"
-ASSESSOR_VERSION = "v3"
+# Algoritma değişince yükseltilir; eski veri damgasıyla ayrışır.
+# v4 (2026-08-12): kalıcı tablolar canlı motorla hizalandı — classify_all/assess_all
+# artık Mevcut Kural'ı kullanıyor (eskiden yalnız outcome'a bakıyorlardı, eşik
+# altındaki 13.210 BASARILI sürüş kalıcı tablolarda yoktu). assess_all ayrıca
+# out-of-content'i dışlıyor ve sonraki sürüşü senaryo statüsüne göre değerlendiriyor.
+# ÖNKOŞUL: db/08_align_persisted_with_current_rule.sql çalıştırılmış olmalı.
+CLASSIFIER_VERSION = "v4"
+ASSESSOR_VERSION = "v4"
 
 # Sinyal penceresi: [start_time, end_time + N dk]. Sürüş ÖNCESİ olaylar kasıtlı
 # dışlanır — geçmiş bir arıza bu sürüşü açıklamaz.
