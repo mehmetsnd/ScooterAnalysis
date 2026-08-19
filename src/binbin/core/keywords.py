@@ -34,7 +34,7 @@ Benimseme kuralı — ÜÇ yol vardır:
       gerekçesiyle işaretlidir; etiketsiz zayıf kelime BIRAKILMAZ.
 
 Elenen her kelime de ölçülen sayısıyla birlikte aşağıda gerekçesiyle kayıtlıdır —
-`db/07_signal_rulebook_revision.sql`'in kelime tarafındaki karşılığı.
+Kural kitabının (`db/01_setup.sql` seed) kelime tarafındaki karşılığı.
 
 NOT: aşağıdaki `tekil` değerleri REVİZYON SONRASI kümeye göredir (bir kelimenin
 tekil katkısı, kümedeki diğer kelimelere bağlıdır); `fail/ok/lift` ise kelimeye

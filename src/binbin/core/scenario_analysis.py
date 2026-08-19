@@ -16,7 +16,11 @@ from typing import Iterable, Mapping
 
 from binbin.core.classifier import classify_ride
 from binbin.core.false_fault import assess_ride
-from binbin.core.ratios import enum_or_none as _enum_or_none, pct as _pct
+from binbin.core.ratios import (
+    different_user as _different_user,
+    enum_or_none as _enum_or_none,
+    pct as _pct,
+)
 from binbin.core.threshold_scan import ThresholdScanAccumulator
 from binbin.domain.enums import (
     ClassificationSource,
@@ -32,6 +36,9 @@ from binbin.domain.models import Ride
 
 CURRENT_DURATION_SEC = 120.0
 CURRENT_DISTANCE_M = 60.0
+
+# Kategori atanamayan başarısızlığın sentinel adı (DB enum'ı değil, rapor anahtarı).
+KANIT_YOK = "KANIT_YOK"
 
 # Sıcak nokta eşikleri — istatistiksel anlamlılık için asgari kütle.
 MIN_SUBREGION_RIDES = 2000    # alt bölge için asgari toplam sürüş
@@ -201,7 +208,7 @@ def _new_accumulator(scenario: FailureScenario) -> dict:
         "verdicts": Counter(),
         "subregions": defaultdict(lambda: {"failed": 0, "false_alarm": 0}),
         "hourly": Counter(),
-        # Kategori-Sonuç Matrisi: kategori (TEKNIK/REGULASYON/.../SINYALSIZ) x verdict.
+        # Kategori-Sonuç Matrisi: kategori (TEKNIK/REGULASYON/.../KANIT_YOK) x verdict.
         "category_matrix": defaultdict(Counter),
         # TEKNİK ARIZA KIRILIMI: (kaynak, etiket) -> sürüş/verdict/boşa görev.
         # Etiket DB'den (kural kitabı açıklaması) akar; core 58 kodu HARDCODE ETMEZ.
@@ -254,7 +261,7 @@ def _update_false_fault(acc: dict, assessment, vehicle_id: int) -> None:
 def _update_category_matrix(acc: dict, category: str, verdict: FaultVerdict) -> None:
     """Kategori-Sonuç Matrisi: her başarısız sürüşü (kategori, verdict) hücresine ekler.
 
-    SINYALSIZ dahil TÜM kategoriler yazılır (uydurma yok, şeffaf raporlama) —
+    KANIT_YOK dahil TÜM kategoriler yazılır (uydurma yok, şeffaf raporlama) —
     araç durum-sinyali sayesinde bu kütlenin küçülmesi beklenir, gizlenmez.
     """
     acc["category_matrix"][category][verdict.value] += 1
@@ -306,10 +313,10 @@ def _finalize_scenario(acc: dict, common: dict, cost_rows: list[dict]) -> dict:
     categories = [
         {"category": key, "count": count}
         for key, count in acc["categories"].items()
-        if key != "SINYALSIZ"
+        if key != KANIT_YOK
     ]
     categories.sort(key=lambda r: r["count"], reverse=True)
-    signalless_count = acc["categories"].get("SINYALSIZ", 0)
+    signalless_count = acc["categories"].get(KANIT_YOK, 0)
 
     matrix_rows = []
     for category, counts in acc["category_matrix"].items():
@@ -617,8 +624,11 @@ def analyze_scenarios(
                     row.get("comment_text"),
                     field_category=_enum_or_none(FailureCategory, row.get("field_category")),
                     field_reason=_enum_or_none(FailureReason, row.get("field_reason")),
+                    maintenance_fault=bool(row.get("maintenance_fault")),
+                    neighbor_vehicle_fault=bool(row.get("neighbor_vehicle_fault")),
+                    neighbor_user_fault=bool(row.get("neighbor_user_fault")),
                 )
-            category = classification.category.value if classification.category else "SINYALSIZ"
+            category = classification.category.value if classification.category else KANIT_YOK
             acc["categories"][category] += 1
             vehicle_key = (int(row.get("vehicle_id") or 0), row.get("external_code"))
             acc["vehicles"][vehicle_key] += 1
@@ -632,6 +642,8 @@ def analyze_scenarios(
                 comment_text=row.get("comment_text"),
                 rating=row.get("rating"),
                 field_fault=row.get("field_signal_reason_id") is not None,
+                next_ride_different_user=_different_user(row.get("user_ref"), row.get("next_user_ref")),
+                displacement_m=row.get("displacement_m"),
             )
             _update_control(acc, assessment)
             _update_false_fault(acc, assessment, int(row.get("vehicle_id") or 0))

@@ -2,7 +2,7 @@
 
 Bir kodu `is_fault_signal=true` yapmak "bu olay başarısızlığı açıklar" İDDİASIDIR ve
 ölçülebilir: lift = P(kod|başarısız) / P(kod|başarılı). lift ≈ 1 → gürültü.
-Ölçümle `Batarya az` 0,8x çıkıp elendi (db/07_signal_rulebook_revision.sql).
+Ölçümle `Batarya az` 0,8x çıkıp elendi (kural kitabı seed'i, db/01_setup.sql).
 
 Düşük lift "bu kod arıza değil" demez, "bu sürüşün başarısızlığını açıklamıyor" der;
 iş gerekçesi ölçümü geçersiz kılabilir. Bu modül KARAR VERMEZ, sayı üretir — karar

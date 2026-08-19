@@ -265,12 +265,12 @@ def test_technical_detail_empty_without_technical_failures():
 
 
 def test_category_matrix_without_signal_falls_back_to_signalless():
-    """Sinyal yoksa (mevcut davranış) matris hâlâ SINYALSIZ satırıyla şeffaf raporlar."""
+    """Sinyal yoksa matris hâlâ KANIT_YOK satırıyla şeffaf raporlar."""
     report = analyze_scenarios([_row(1, "BASARISIZ_HARD", 50, 10)])
     matrix_rows = {
         r["category"]: r for r in report["scenarios"]["current_rule"]["category_matrix"]["rows"]
     }
-    assert matrix_rows["SINYALSIZ"]["total"] == 1
+    assert matrix_rows["KANIT_YOK"]["total"] == 1
 
 
 def test_cli_uses_readable_scenario_names(capsys):
@@ -380,3 +380,27 @@ def test_scan_accumulator_integrates_end_to_end_through_analyze_scenarios():
     scan_report = acc.finalize()
     assert scan_report["evaluated"] == 1
     assert scan_report["pool_size"] == 1
+
+
+def test_missing_user_ref_does_not_silently_kill_healthy_proof():
+    """Kullanıcı bilgisi hiç gelmeyen satırda healthy_proof KAPANMAMALI.
+
+    `next_user_ref != user_ref` ikisi de None iken False döner; ham eşitlik
+    karşılaştırması kullanılsaydı sahte alarm ölçümü sessizce sıfırlanırdı.
+    """
+    failed = _row(1, "BASARISIZ_HARD", 50, 10)
+    healthy = _row(2, "BASARILI", 900, 1500)
+    failed["vehicle_id"] = healthy["vehicle_id"] = 7
+    failed["end_message"] = "motor calismiyor"
+    for key in ("user_ref", "next_user_ref"):
+        failed.pop(key, None)
+    failed.update({
+        "next_ride_id": healthy["ride_id"],
+        "next_start_time": healthy["start_time"],
+        "next_outcome": "BASARILI",
+        "next_duration_sec": 900,
+        "next_distance_m": 1500,
+    })
+    report = analyze_scenarios([failed])
+    primary = report["scenarios"]["current_rule"]["false_fault"]["primary"]
+    assert sum(row["events"] for row in primary) == 1
