@@ -2,7 +2,7 @@
 
 import pytest
 
-from binbin.data.ingest import copy_csv_to_staging, detect_csv_kind
+from binbin.data.ingest import RIDES_COLUMNS, copy_csv_to_staging, detect_csv_kind
 from binbin.data.ingest_status import StatusIngestReport
 
 
@@ -14,7 +14,7 @@ def _touch(dir_, name, content):
 
 # --- detect_csv_kind: başlık satırından tür ayrımı ---------------------------
 def test_detect_csv_kind_rides(tmp_path):
-    p = _touch(tmp_path, "rides.csv", "rental_id,user_id,vehicle_id\n1,2,3\n")
+    p = _touch(tmp_path, "rides.csv", ",".join(RIDES_COLUMNS) + "\n")
     assert detect_csv_kind(p) == "rides"
 
 
@@ -55,3 +55,21 @@ def test_status_ingest_report_varsayilanlar():
     assert report.rows_skipped == 0
     assert report.vehicles_created == 0
     assert report.warnings == []
+
+
+def test_every_source_runner_resolves():
+    """Sarmalayıcı ortaklaşınca import listeleri sapabiliyor; çağrı anında NameError
+    veren bir runner testlerden geçiyordu."""
+    import inspect
+
+    from binbin.data.ingest import run_geo_ingest, run_ingest, run_maintenance_ingest
+    from binbin.data.ingest_status import run_status_ingest
+
+    for runner in (run_ingest, run_status_ingest, run_maintenance_ingest, run_geo_ingest):
+        source = inspect.getsource(runner)
+        for name in ("run_source_ingest", "_run_ingest_locked"):
+            if name in source:
+                assert name in runner.__globals__, f"{runner.__name__} -> {name}"
+                break
+        else:
+            raise AssertionError(f"{runner.__name__} bilinen bir akışı çağırmıyor")

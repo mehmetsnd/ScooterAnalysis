@@ -18,13 +18,8 @@ from binbin.config import Scope
 from binbin.data.engine import get_engine
 from binbin.data.ingest import (
     _FLEET_STATUS_EVENT_PARTITION_NAME_RE,
-    _close_data_load_failed,
-    _ingest_lock,
-    _open_data_load,
-    close_data_load_success,
-    copy_csv_to_staging,
     ensure_month_partitions,
-    skip_report_if_already_loaded,
+    run_source_ingest,
 )
 
 
@@ -139,36 +134,9 @@ def run_status_ingest(
     engine: Engine | None = None,
     force: bool = False,
 ) -> StatusIngestReport:
-    """Uçtan uca durum-değişim ingest'i. `run_ingest` (ingest.py) ile aynı sözleşme:
-
-    guard (zaten SUCCESS ise SKIPPED, --force ile aşılır) → advisory lock ile
-    serialize → data_load aç → COPY → transform → kapat.
-    """
-    engine = engine if engine is not None else get_engine()
-    file_bytes = csv_path.stat().st_size
-
-    if not force:
-        skipped = skip_report_if_already_loaded(engine, csv_path, file_bytes, StatusIngestReport)
-        if skipped is not None:
-            return skipped
-
-    with _ingest_lock(engine):
-        return _run_status_ingest_locked(engine, csv_path, scope, file_bytes)
-
-
-def _run_status_ingest_locked(
-    engine: Engine, csv_path: Path, scope: Scope, file_bytes: int
-) -> StatusIngestReport:
-    """Kilit altındaki asıl yükleme: data_load aç → COPY → transform → kapat."""
-    data_load_id = _open_data_load(engine, csv_path.name, file_bytes)
-
-    try:
-        copy_csv_to_staging(engine, csv_path, table="stg_status_raw")
-        report = transform_staging_to_status_events(engine, scope, data_load_id)
-        report.file_name = csv_path.name
-        report.status = "SUCCESS"
-        close_data_load_success(engine, data_load_id, report, table="fleet_status_event")
-        return report
-    except Exception as exc:
-        _close_data_load_failed(engine, data_load_id, exc)
-        raise
+    """Uçtan uca durum-değişim ingest'i; akış `ingest.run_source_ingest`'te ortaktır."""
+    return run_source_ingest(
+        csv_path, scope, staging_table="stg_status_raw",
+        target_table="fleet_status_event", transform=transform_staging_to_status_events,
+        report_cls=StatusIngestReport, engine=engine, force=force,
+    )

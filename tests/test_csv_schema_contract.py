@@ -164,8 +164,8 @@ def test_cli_temiz_semada_her_iki_dosyayi_yukler(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "sql_file,table,columns",
     [
-        ("db/01_reset_ve_kurulum.sql", "stg_rental_raw", RIDES_COLUMNS),
-        ("db/06_vehicle_status.sql", "stg_status_raw", STATUS_COLUMNS),
+        ("db/01_setup.sql", "stg_rental_raw", RIDES_COLUMNS),
+        ("db/01_setup.sql", "stg_status_raw", STATUS_COLUMNS),
     ],
 )
 def test_sabit_liste_staging_semasiyla_ayni_sirada(sql_file, table, columns):
@@ -173,3 +173,46 @@ def test_sabit_liste_staging_semasiyla_ayni_sirada(sql_file, table, columns):
     sql = (ROOT / sql_file).read_text(encoding="utf-8")
     body = re.search(rf"CREATE UNLOGGED TABLE {table} \((.*?)\);", sql, re.S).group(1)
     assert re.findall(r"(\w+)\s+text", body) == list(columns)
+
+
+def test_group_source_csvs_skips_unknown_instead_of_crashing(tmp_path):
+    """data_raw/'a henüz ingest'i yazılmamış bir CSV konması pipeline'ı DÜŞÜRMEMELİ."""
+    from binbin.data.ingest import RIDES_COLUMNS, group_source_csvs
+
+    rides = tmp_path / "rides.csv"
+    rides.write_text(",".join(RIDES_COLUMNS) + "\n", encoding="utf-8")
+    unsupported = tmp_path / "unsupported.csv"
+    unsupported.write_text("alpha,beta,gamma\n", encoding="utf-8")
+
+    by_kind, unknown = group_source_csvs([rides, unsupported])
+
+    assert by_kind["rides"] == [rides]
+    assert unknown == [unsupported]
+
+
+def test_geofence_csv_is_not_mistaken_for_rides(tmp_path):
+    """Koordinat CSV'si sürüş CSV'siyle ilk 14 kolonu paylaşır; imza 15.'de ayırmalı."""
+    from binbin.data.ingest import group_source_csvs
+
+    geo = tmp_path / "geofence.csv"
+    geo.write_text(
+        "rental_id,user_id,vehicle_id,plate,vehicle_type_id,country_id,country_name,"
+        "region_id,region_name,sub_region_id,rental_status,status_label,start_date_tr,"
+        "end_date_tr,distance,duration,mongo_match\n",
+        encoding="utf-8",
+    )
+    by_kind, unknown = group_source_csvs([geo])
+    assert unknown == []
+    assert by_kind["geo"] == [geo]
+    assert by_kind["rides"] == []
+
+
+def test_ingest_refreshes_planner_statistics():
+    """Toplu COPY sonrası ANALYZE koşmazsa planlayıcı bayat istatistikle çalışır
+    (ölçüldü: feedback 48.083 satırken n_live_tup=0 görünüyordu)."""
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "src" / "binbin" / "data"
+              / "ingest.py").read_text(encoding="utf-8")
+    assert "_ANALYZE_AFTER_LOAD" in source
+    assert "ANALYZE" in source
