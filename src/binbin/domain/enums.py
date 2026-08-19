@@ -32,6 +32,9 @@ class FailureCategory(str, Enum):
     KULLANICI = "KULLANICI"
     ODEME = "ODEME"
     SISTEM = "SISTEM"
+    # Komşu sürüş kanıtı problemin tarafını gösterir, alt türünü değil.
+    ARAC_TARAFI = "ARAC_TARAFI"
+    KULLANICI_TARAFI = "KULLANICI_TARAFI"
 
 
 class PaymentStatus(str, Enum):
@@ -72,12 +75,16 @@ class ClassificationSource(str, Enum):
 
     FIELD_SIGNAL : sürüş telemetrisi — mevcut CSV'de hepsi NULL, kod hazır ama üretilmiyor.
     REASON_CODE  : durum defterinden gelen, kural kitabında açık teknik arıza sayılan sinyal.
+    NEIGHBOR_RIDE: aynı aracın/kullanıcının komşu sürüşünden çıkarılan kanıt.
+    MAINTENANCE  : sürüşten sonraki 24 sa içinde açılan bakım kaydı.
     """
 
     FIELD_SIGNAL = "FIELD_SIGNAL"
     REASON_CODE = "REASON_CODE"
     TEXT_MESSAGE = "TEXT_MESSAGE"
     TEXT_COMMENT = "TEXT_COMMENT"
+    NEIGHBOR_RIDE = "NEIGHBOR_RIDE"
+    MAINTENANCE = "MAINTENANCE"
     NONE = "NONE"
 
 
