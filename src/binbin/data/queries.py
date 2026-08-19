@@ -14,7 +14,15 @@ from typing import Iterable, Optional
 from sqlalchemy import Engine, text
 
 from binbin.config import FIELD_SIGNAL_WINDOW_POST_MIN, Scope
-from binbin.data.engine import _as_dicts, _scope_clause, field_signal_join_sql
+from binbin.data.engine import (
+    _as_dicts,
+    _scope_clause,
+    current_rule_sql,
+    field_signal_join_sql,
+    maintenance_signal_sql,
+    neighbor_base_sql,
+    neighbor_signal_sql,
+)
 from binbin.data.repository import AnalysisScope, UnknownScopeName
 
 
@@ -77,7 +85,7 @@ def _unknown_scope_message(kind: str, missing: list[str], valid: list[str]) -> s
 
 # Kapsam türü → (tablo, id kolonu, is_test ifadesi). SQL'e giden TEK identifier
 # kaynağı; hepsi sabit literal (SQL güvenlik sözleşmesi).
-# DİKKAT: `is_test` YALNIZ `city` tablosunda vardır (bkz. db/01_reset_ve_kurulum.sql);
+# DİKKAT: `is_test` YALNIZ `city` tablosunda vardır (bkz. db/01_setup.sql);
 # `country` için sabit `false` seçilir. Aksi hâlde ülke kapsamı UndefinedColumn ile çöker.
 _SCOPE_TABLES = {
     "ülke": ("country", "country_id", "false"),
@@ -96,32 +104,49 @@ def _lookup_scope_names(conn, kind: str) -> list[dict]:
     görünür ve yazım hatasından ayırt edilemez. Ayrım Python'da yapılır.
     """
     table, id_col, is_test_expr = _SCOPE_TABLES[kind]
+    # country_id iki tabloda da var (country'de kendi PK'si) — ülke→şehir indirgemesi
+    # bu kolonu kullanır, ayrı bir sorgu gerekmez.
     return [
         dict(m)
         for m in conn.execute(
-            text(f"SELECT name, {id_col} AS id, {is_test_expr} AS is_test FROM {table}"),
+            text(
+                f"SELECT name, {id_col} AS id, {is_test_expr} AS is_test, country_id "
+                f"FROM {table}"
+            ),
         ).mappings().all()
     ]
 
 
 def resolve_scope(engine: Engine, scope: Scope) -> AnalysisScope:
-    """Ülke/şehir adlarını id listelerine çözer. is_test şehirler daima dışlanır.
+    """Ülke/şehir adlarını TEK bir şehir id listesine indirger. is_test şehirler hariç.
+
+    Ülke ve şehir birlikte verilirse VE olarak uygulanır (kesişim) — `run.ps1` da
+    bunu belgeler. Sonuç tek liste olduğu için sorgu tarafında tek predikat kalır.
 
     Çözülemeyen ad `UnknownScopeName` yükseltir — eskiden `[]` dönüp `ANY('{}')`'e
     çevriliyor ve tüm pipeline 0 satırla, exit 0 ile "başarıyla" bitiyordu.
     """
     if scope.is_unrestricted:
-        return AnalysisScope(None, None)
-    country_ids: Optional[list[int]] = None
-    city_ids: Optional[list[int]] = None
+        return AnalysisScope(None)
     with engine.connect() as conn:
+        city_rows = _lookup_scope_names(conn, "şehir")
+        selected = [r for r in city_rows if not r["is_test"]]
         if scope.countries:
-            rows = _lookup_scope_names(conn, "ülke")
-            country_ids = _assert_all_resolved("ülke", list(scope.countries), rows)
+            country_rows = _lookup_scope_names(conn, "ülke")
+            wanted = set(_assert_all_resolved("ülke", list(scope.countries), country_rows))
+            selected = [r for r in selected if r["country_id"] in wanted]
         if scope.cities:
-            rows = _lookup_scope_names(conn, "şehir")
-            city_ids = _assert_all_resolved("şehir", list(scope.cities), rows)
-    return AnalysisScope(country_ids, city_ids)
+            wanted = set(_assert_all_resolved("şehir", list(scope.cities), city_rows))
+            selected = [r for r in selected if int(r["id"]) in wanted]
+    if not selected:
+        # Adların hepsi tek tek çözüldü ama KESİŞİM boş (ör. şehir başka ülkede).
+        # Boş liste `ANY('{}')`'e dönüp pipeline'ı sessizce 0 satırla bitirirdi.
+        raise UnknownScopeName(
+            "Hata: ülke ve şehir kapsamının kesişimi boş — "
+            f"ülke={list(scope.countries)}, şehir={list(scope.cities)}. "
+            "Şehirlerin verilen ülkeye ait olduğundan emin olun."
+        )
+    return AnalysisScope(sorted(int(r["id"]) for r in selected))
 
 
 def _assert_all_resolved(kind: str, requested: list[str], rows: list) -> list[int]:
@@ -177,7 +202,9 @@ def analysis_timeline(
                 r.data_quality_flags,
                 f.rating, f.comment_text,
                 fsig.field_signal_reason_id, fsig.field_category::text AS field_category,
-                fsig.field_reason::text AS field_reason, fsig.field_signal_desc
+                fsig.field_reason::text AS field_reason, fsig.field_signal_desc,
+                COALESCE(mnt.maintenance_fault, false) AS maintenance_fault,
+                rg.displacement_m
             FROM ride r
             JOIN city ci ON ci.city_id = r.city_id
             JOIN country co ON co.country_id = ci.country_id
@@ -188,20 +215,34 @@ def analysis_timeline(
             {field_signal_join_sql(
                 candidate_guard="thresholds" if candidate_bounds is not None else None
             )}
+            {maintenance_signal_sql(candidate_guard=candidate_bounds is not None)}
+            LEFT JOIN ride_geo rg
+                   ON rg.ride_id = r.ride_id AND rg.ride_start_time = r.start_time
             WHERE ci.is_test = false
               AND r.outcome IN ('BASARILI', 'BASARISIZ_HARD')
               AND NOT ('OUT_OF_CONTENT' = ANY(r.data_quality_flags))
               {clause}
+        ), nb_base AS (
+            SELECT {neighbor_base_sql("r")}
+            FROM ride r
+            JOIN city ci ON ci.city_id = r.city_id
+            WHERE ci.is_test = false
+              AND r.outcome IN ('BASARILI', 'BASARISIZ_HARD')
+              AND NOT ('OUT_OF_CONTENT' = ANY(r.data_quality_flags))
+              {clause}
+        ), nb AS ({neighbor_signal_sql(candidate_guard=candidate_bounds is not None)}
         ), timeline AS (
             SELECT
-                *,
-                LEAD(ride_id) OVER w AS next_ride_id,
-                LEAD(start_time) OVER w AS next_start_time,
-                LEAD(duration_sec) OVER w AS next_duration_sec,
-                LEAD(distance_m) OVER w AS next_distance_m,
-                LEAD(outcome) OVER w AS next_outcome
-            FROM scoped
-            WINDOW w AS (PARTITION BY vehicle_id ORDER BY start_time, ride_id)
+                s.*,
+                nb.next_user_ref, nb.neighbor_vehicle_fault, nb.neighbor_user_fault,
+                LEAD(s.ride_id) OVER w AS next_ride_id,
+                LEAD(s.start_time) OVER w AS next_start_time,
+                LEAD(s.duration_sec) OVER w AS next_duration_sec,
+                LEAD(s.distance_m) OVER w AS next_distance_m,
+                LEAD(s.outcome) OVER w AS next_outcome
+            FROM scoped s
+            LEFT JOIN nb ON nb.ride_id = s.ride_id AND nb.start_time = s.start_time
+            WINDOW w AS (PARTITION BY s.vehicle_id ORDER BY s.start_time, s.ride_id)
         )
         SELECT *
         FROM timeline
@@ -270,7 +311,7 @@ def signal_discrimination_rows(
     dahil TÜM sürüşlerden alınır, çünkü dışlanan sürüş de aracı meşgul eder.
     Sürüş × kod başına TEK sayım (DISTINCT); oranların paydası sürüş sayısıdır.
     """
-    clause, params = _scope_clause(scope)
+    clause, params = _scope_clause(scope, alias="w")
     sql = text(
         f"""
         WITH win AS (

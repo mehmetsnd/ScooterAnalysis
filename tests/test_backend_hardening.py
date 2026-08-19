@@ -15,7 +15,6 @@ from binbin.data.ingest import (
     ensure_month_partitions,
 )
 from binbin.data.engine import (
-    _CITY_ALIAS,
     _database_url,
     _scope_clause,
     current_rule_params,
@@ -31,25 +30,32 @@ def test_scope_clause_none_bos():
     assert _scope_clause(None) == ("", {})
 
 
-def test_scope_clause_sadece_ulke():
-    clause, params = _scope_clause(AnalysisScope(country_ids=[1, 2], city_ids=None))
-    assert "ANY(:sc_country_ids)" in clause  # değer bind-param
-    assert f"{_CITY_ALIAS}.country_id" in clause  # alias sabit literal 'ci'
-    assert params == {"sc_country_ids": [1, 2]}
-    assert "sc_city_ids" not in params
+def test_scope_clause_filtresiz_scope_bos_doner():
+    assert _scope_clause(AnalysisScope(None)) == ("", {})
 
 
-def test_scope_clause_sadece_sehir():
-    clause, params = _scope_clause(AnalysisScope(country_ids=None, city_ids=[5]))
-    assert "ANY(:sc_city_ids)" in clause
-    assert params == {"sc_city_ids": [5]}
-
-
-def test_scope_clause_ulke_ve_sehir():
-    clause, params = _scope_clause(AnalysisScope(country_ids=[9], city_ids=[7, 8]))
-    assert params == {"sc_country_ids": [9], "sc_city_ids": [7, 8]}
+def test_scope_clause_ride_tarafinda_kurulur():
+    """Predikat `city` üzerinde DEĞİL `ride.city_id` üzerinde olmalı: planlayıcının
+    satır tahmini buna bağlı (bkz. AnalysisScope docstring'i)."""
+    clause, params = _scope_clause(AnalysisScope(city_ids=[7, 8]))
+    assert "r.city_id = ANY(:sc_city_ids)" in clause  # alias sabit literal
+    assert "ci." not in clause
+    assert params == {"sc_city_ids": [7, 8]}
     # Ham değer clause metnine gömülmemeli (yalnız :param placeholder)
-    assert "9" not in clause and "[7, 8]" not in clause
+    assert "[7, 8]" not in clause
+
+
+@pytest.mark.parametrize("alias", ["r", "ride", "w"])
+def test_scope_clause_izin_verilen_aliaslar(alias):
+    clause, _ = _scope_clause(AnalysisScope(city_ids=[5]), alias=alias)
+    assert f"{alias}.city_id = ANY(:sc_city_ids)" in clause
+
+
+def test_scope_clause_bilinmeyen_alias_reddedilir():
+    """Alias allowlist'i SQL güvenlik sözleşmesinin parçası — interpolasyona
+    yalnız sabit literal akar."""
+    with pytest.raises(ValueError):
+        _scope_clause(AnalysisScope(city_ids=[5]), alias="r; DROP TABLE ride--")
 
 
 # --- Partition adı guard'ı: yalnız ride_YYYY_MM kabul; enjeksiyon reddedilir --

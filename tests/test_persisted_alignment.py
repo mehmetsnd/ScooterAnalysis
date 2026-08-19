@@ -17,14 +17,21 @@ _T0 = datetime(2026, 6, 1, 12, 0)
 
 
 class _FakeConn:
-    rowcount = 0
-
-    def __init__(self, batches, calls):
+    def __init__(self, batches, calls, update_rowcount=None):
         self._batches, self.calls = batches, calls
+        self._update_rowcount = update_rowcount
+        self.rowcount = 0
 
     def execute(self, statement, params=None):
         self.calls.append((" ".join(str(statement).split()), params))
         self._last = self._batches.pop(0) if self._batches else []
+        if "UPDATE ride SET" in str(statement) and isinstance(params, dict):
+            # Varsayılan: yazma başarılı (payload kadar satır); test aksini isterse ezer.
+            self.rowcount = (
+                self._update_rowcount
+                if self._update_rowcount is not None
+                else len(params.get("ride_ids", []))
+            )
         return self
 
     def mappings(self):
@@ -46,9 +53,10 @@ class _FakeEngine:
     def __init__(self, *batches):
         self.calls = []
         self._batches = list(batches)
+        self.update_rowcount = None
 
     def begin(self):
-        return _FakeConn(self._batches, self.calls)
+        return _FakeConn(self._batches, self.calls, self.update_rowcount)
 
 
 def _assess_row(**over):
@@ -57,6 +65,7 @@ def _assess_row(**over):
         "vehicle_id": 7, "outcome": "BASARISIZ_HARD", "duration_sec": 40,
         "distance_m": 5, "end_reason_id": None, "end_message": "motor calismiyor",
         "rating": None, "comment_text": None, "field_fault": False,
+        "user_ref": "u-1", "next_user_ref": "u-2", "displacement_m": None,
         "next_ride_id": 2, "next_start_time": _T0 + timedelta(minutes=30),
         "next_outcome": "BASARILI", "next_duration_sec": 900,
         "next_distance_m": 1500,
@@ -129,11 +138,11 @@ def test_classify_all_uses_current_rule_and_thresholds_guard():
 
 
 def test_classify_all_refresh_aborts_when_migration_is_missing():
-    """db/08 uygulanmadan reset kendi transaction'ında COMMIT olur, sonraki UPDATE
+    """Kurulum SQL uygulanmadan reset kendi transaction'ında COMMIT olur, sonraki UPDATE
     CheckViolation verir ve ride.failure_category tablo genelinde SİLİNMİŞ kalır.
     Bu yüzden reset'ten ÖNCE kısıt denetlenir."""
     engine = _FakeEngine([{"migrated": False}])
-    with pytest.raises(RuntimeError, match="db/08"):
+    with pytest.raises(RuntimeError, match="db/01_setup"):
         classify_all(engine, None, refresh=True)
     assert not any("UPDATE ride SET" in c[0] for c in engine.calls)
 
@@ -158,15 +167,17 @@ def test_classify_all_passes_telemetry_to_the_core():
         "triggered_regulation_id": None, "unlock_ack": None, "start_battery_pct": None,
         "connection_lost": None, "motor_error_code": None, "bms_error_code": None,
         "user_cancelled": True, "payment_status": None,
+        "maintenance_fault": False,
+        "neighbor_vehicle_fault": False, "neighbor_user_fault": False,
     }])
     classify_all(engine, None)
-    assert engine.calls[-1][1][0]["category"] == "KULLANICI"
+    assert engine.calls[-1][1]["categories"] == ["KULLANICI"]
 
 
 # --- 120/60: Python sabiti ile SQL kısıtı senkron kalmalı --------------------
 @pytest.mark.parametrize(
     "sql_file",
-    ["db/01_reset_ve_kurulum.sql", "db/08_align_persisted_with_current_rule.sql"],
+    ["db/01_setup.sql"],
 )
 def test_db_constraint_matches_python_thresholds(sql_file):
     """Ayrışırsa DB, canlı motorun başarısız saydığı satıra kategori yazmayı
@@ -186,3 +197,20 @@ def test_write_path_never_filters_on_outcome_alone():
     for name in ("classify.py", "assess.py"):
         src = (ROOT / "src" / "binbin" / "data" / name).read_text(encoding="utf-8")
         assert "current_rule_sql(" in src
+
+
+def test_classify_all_raises_when_bulk_update_writes_nothing():
+    """Toplu UPDATE hiç satır yazmazsa sessizce 'başarılı' denmemeli — kalıcı tablo
+    boş kalır ve canlı analyze ile ayrışır."""
+    engine = _FakeEngine([{
+        "ride_id": 1, "start_time": _T0, "end_message": None, "comment_text": None,
+        "outcome": "BASARISIZ_HARD", "field_category": None, "field_reason": None,
+        "triggered_regulation_id": None, "unlock_ack": None, "start_battery_pct": None,
+        "connection_lost": None, "motor_error_code": None, "bms_error_code": None,
+        "user_cancelled": True, "payment_status": None,
+        "maintenance_fault": False,
+        "neighbor_vehicle_fault": False, "neighbor_user_fault": False,
+    }])
+    engine.update_rowcount = 0
+    with pytest.raises(RuntimeError, match="yaz"):
+        classify_all(engine, None)

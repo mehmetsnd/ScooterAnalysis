@@ -112,7 +112,7 @@ class _FakeEngine:
 def test_resolve_scope_hepsi_bulunursa_id_dondurur():
     engine = _FakeEngine([{"name": "Bursa", "id": 9, "is_test": False}])
     scope = resolve_scope(engine, Scope(cities=("Bursa",)))
-    assert scope == AnalysisScope(country_ids=None, city_ids=[9])
+    assert scope == AnalysisScope(city_ids=[9])
 
 
 def test_resolve_scope_bilinmeyen_sehir_hata_verir():
@@ -150,7 +150,7 @@ def test_resolve_scope_test_sehri_ayri_mesaj_verir():
 def test_resolve_scope_kapsamsizsa_hic_sorgu_calistirmaz():
     """`--all` yolunda DB'ye hiç gidilmemeli (mevcut sözleşme, kilitleniyor)."""
     engine = _FakeEngine()
-    assert resolve_scope(engine, Scope()) == AnalysisScope(None, None)
+    assert resolve_scope(engine, Scope()) == AnalysisScope(None)
     assert engine.log == []
 
 
@@ -165,7 +165,7 @@ def test_resolve_scope_is_test_filtresini_sorguya_gommez():
 
 
 # --- SQL ↔ şema sözleşmesi -------------------------------------------------
-_DDL = (ROOT / "db" / "01_reset_ve_kurulum.sql").read_text(encoding="utf-8")
+_DDL = (ROOT / "db" / "01_setup.sql").read_text(encoding="utf-8")
 
 
 def _table_ddl(table: str) -> str:

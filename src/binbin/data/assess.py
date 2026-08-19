@@ -11,6 +11,7 @@ from sqlalchemy import Engine, text
 
 from binbin.config import ASSESSOR_VERSION
 from binbin.core.false_fault import assess_ride
+from binbin.core.ratios import different_user
 from binbin.core.scenario_analysis import CURRENT_RULE, ScenarioStatus
 from binbin.data.engine import (
     _scope_clause,
@@ -81,10 +82,11 @@ def assess_all(
     timeline_sql = text(
         f"""
         WITH scoped AS (
-            SELECT r.ride_id, r.start_time, r.end_time, r.vehicle_id, r.outcome,
-                   r.duration_sec, r.distance_m, r.end_reason_id, r.end_message,
+            SELECT r.ride_id, r.start_time, r.end_time, r.vehicle_id, r.user_ref,
+                   r.outcome, r.duration_sec, r.distance_m, r.end_reason_id, r.end_message,
                    f.rating, f.comment_text,
-                   (fsig.field_signal_reason_id IS NOT NULL) AS field_fault
+                   (fsig.field_signal_reason_id IS NOT NULL) AS field_fault,
+                   rg.displacement_m
             FROM ride r
             JOIN city ci ON ci.city_id = r.city_id
             LEFT JOIN feedback f
@@ -92,6 +94,8 @@ def assess_all(
             -- ADAY GUARD'I ("thresholds"): guard ile final WHERE aynı eşikleri
             -- `current_rule_params()`ten okur, bu yüzden TAM EŞLEŞMEDİR.
             {field_signal_join_sql(candidate_guard="thresholds")}
+            LEFT JOIN ride_geo rg
+                   ON rg.ride_id = r.ride_id AND rg.ride_start_time = r.start_time
             WHERE ci.is_test = false
               AND r.outcome IN ('BASARILI', 'BASARISIZ_HARD')
               -- OOC ve outcome filtreleri LEAD'den ÖNCE koşmalı; yoksa "sonraki
@@ -105,7 +109,8 @@ def assess_all(
                 LEAD(start_time)   OVER w AS next_start_time,
                 LEAD(outcome)      OVER w AS next_outcome,
                 LEAD(duration_sec) OVER w AS next_duration_sec,
-                LEAD(distance_m)   OVER w AS next_distance_m
+                LEAD(distance_m)   OVER w AS next_distance_m,
+                LEAD(user_ref)     OVER w AS next_user_ref
             FROM scoped
             WINDOW w AS (PARTITION BY vehicle_id ORDER BY start_time, ride_id)
         )
@@ -199,6 +204,8 @@ def assess_all(
                 comment_text=row["comment_text"],
                 rating=row["rating"],
                 field_fault=row["field_fault"],
+                next_ride_different_user=different_user(row["user_ref"], row["next_user_ref"]),
+                displacement_m=row["displacement_m"],
             )
             payload.append(
                 {

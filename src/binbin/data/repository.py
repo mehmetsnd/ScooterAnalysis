@@ -27,9 +27,14 @@ class UnknownScopeName(ValueError):
 
 @dataclass(frozen=True)
 class AnalysisScope:
-    """Analiz kapsamı — id listeleri. None = hepsi (filtre yok)."""
+    """Analiz kapsamı — ÇÖZÜLMÜŞ şehir id listesi. None = filtre yok (tüm veri).
 
-    country_ids: Optional[list[int]] = None
+    Ülke filtresi `resolve_scope`'ta şehir id'lerine indirgenir; sorgu tarafında tek
+    bir `ride.city_id` predikatı kalır. Gerekçe ÖLÇÜLDÜ: kapsamı `city` join'i
+    üzerinden vermek planlayıcının satır tahminini 79x şaşırtıyor, o da nested loop
+    seçtiriyordu (timeline 10,9 → 7,9 sn). `ride.city_id`'nin kendi MCV istatistiği var.
+    """
+
     city_ids: Optional[list[int]] = None
 
 
