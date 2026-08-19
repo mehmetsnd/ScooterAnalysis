@@ -13,6 +13,14 @@ UNION ALL
 SELECT 'fleet_status_event', count(*) FROM fleet_status_event
 UNION ALL
 SELECT 'stg_status_raw', count(*) FROM stg_status_raw
+UNION ALL
+SELECT 'ride_geo', count(*) FROM ride_geo
+UNION ALL
+SELECT 'maintenance_event', count(*) FROM maintenance_event
+UNION ALL
+SELECT 'stg_geo_raw', count(*) FROM stg_geo_raw
+UNION ALL
+SELECT 'stg_maintenance_raw', count(*) FROM stg_maintenance_raw
 ORDER BY object_name;
 
 -- Şema nesneleri hâlâ bulunmalı.
@@ -21,14 +29,16 @@ SELECT
     to_regclass('public.feedback') AS feedback_table,
     to_regclass('public.false_fault_assessment') AS false_fault_table,
     to_regclass('public.data_load') AS data_load_table,
-    to_regclass('public.fleet_status_event') AS fleet_status_event_table;
+    to_regclass('public.fleet_status_event') AS fleet_status_event_table,
+    to_regclass('public.ride_geo') AS ride_geo_table,
+    to_regclass('public.maintenance_event') AS maintenance_event_table;
 
 -- Partition'lar silinmemiş olmalı.
 SELECT parent.relname AS parent_table, child.relname AS partition_name
 FROM pg_inherits i
 JOIN pg_class parent ON parent.oid = i.inhparent
 JOIN pg_class child ON child.oid = i.inhrelid
-WHERE parent.relname IN ('ride', 'fleet_status_event')
+WHERE parent.relname IN ('ride', 'fleet_status_event', 'maintenance_event')
 ORDER BY parent.relname, child.relname;
 
 -- Korunması gereken referans/config verileri.
@@ -47,4 +57,8 @@ UNION ALL
 SELECT 'fleet_status_code', count(*) FROM fleet_status_code
 UNION ALL
 SELECT 'fleet_status_reason', count(*) FROM fleet_status_reason
+UNION ALL
+SELECT 'damage_sub_type', count(*) FROM damage_sub_type
+UNION ALL
+SELECT 'geofence', count(*) FROM geofence
 ORDER BY object_name;

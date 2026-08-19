@@ -14,6 +14,14 @@ UNION ALL
 SELECT 'fleet_status_event', count(*) FROM fleet_status_event
 UNION ALL
 SELECT 'stg_status_raw', count(*) FROM stg_status_raw
+UNION ALL
+SELECT 'ride_geo', count(*) FROM ride_geo
+UNION ALL
+SELECT 'maintenance_event', count(*) FROM maintenance_event
+UNION ALL
+SELECT 'stg_geo_raw', count(*) FROM stg_geo_raw
+UNION ALL
+SELECT 'stg_maintenance_raw', count(*) FROM stg_maintenance_raw
 ORDER BY object_name;
 
 SELECT
