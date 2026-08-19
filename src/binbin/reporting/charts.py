@@ -23,6 +23,8 @@ from binbin.reporting.format import fmt_threshold as _fmt_threshold  # noqa: E40
 from binbin.reporting.format import tr_dec as _tr_dec  # noqa: E402
 from binbin.reporting.format import tr_int as _tr_int  # noqa: E402
 from binbin.reporting.format import GROUP_LABELS as _GROUP_LABELS  # noqa: E402
+from binbin.reporting.format import CAUSE_LABELS  # noqa: E402
+from binbin.core.scenario_analysis import KANIT_YOK  # noqa: E402
 from binbin.reporting.format import tr_pct as _tr_pct  # noqa: E402
 
 SURFACE = "#fcfcfb"
@@ -169,19 +171,17 @@ def chart_scenario_causes(report: dict, out_dir: Path) -> Path:
     for scenario in scenarios:
         cause = scenario["cause"]
         mapping = {r["category"]: r["count"] for r in cause["categories"]}
-        mapping["SİNYALSİZ"] = cause["signalless"]["count"]
+        mapping[KANIT_YOK] = cause["signalless"]["count"]
         values.append(mapping)
         keys.update(mapping)
     if not keys:
         return _empty_chart("Neden Dağılımı", "Senaryolara göre başarısızlık nedenleri",
                             out_dir, "scenario_causes.png")
-    # SİNYALSİZ kütlesinin asıl bulgusu (rapor §9.2): büyük çoğunluğu bildirimsiz,
-    # yalnız küçük bir dilimi bildirimli ama kategori atanamayan. Bu ayrım
-    # category_matrix'in SINYALSIZ satırından geliyor (reported / no_report).
+    # Kanıt Bulunmayan kütlesinin çoğu bildirimsizdir; taralı dilim bildirimli olanı ayırır.
     reported_by_scenario = []
     for scenario in scenarios:
         row = next(
-            (r for r in scenario["category_matrix"]["rows"] if r["category"] == "SINYALSIZ"),
+            (r for r in scenario["category_matrix"]["rows"] if r["category"] == KANIT_YOK),
             None,
         )
         reported_by_scenario.append(row["reported"] if row else 0)
@@ -193,24 +193,24 @@ def chart_scenario_causes(report: dict, out_dir: Path) -> Path:
         positions = offsets[idx]
         counts = [mapping.get(key, 0) for key in ordered]
         reported = reported_by_scenario[idx]
-        no_report = [c - reported if key == "SİNYALSİZ" else c for key, c in zip(ordered, counts)]
+        no_report = [c - reported if key == KANIT_YOK else c for key, c in zip(ordered, counts)]
         bars = ax.bar(positions, no_report, width, color=_SCENARIO_COLORS[idx], label=scenario["label"])
-        sig_pos = positions[ordered.index("SİNYALSİZ")]
+        sig_pos = positions[ordered.index(KANIT_YOK)]
         ax.bar(
-            sig_pos, reported, width, bottom=counts[ordered.index("SİNYALSİZ")] - reported,
+            sig_pos, reported, width, bottom=counts[ordered.index(KANIT_YOK)] - reported,
             color=_SCENARIO_COLORS[idx], edgecolor=SURFACE, hatch="////",
             label="— bildirimli ama kategorisiz" if idx == 0 else None,
         )
         ax.bar_label(bars, labels=[_tr_int(c) for c in counts], padding=3, fontsize=8, color=INK2,
                      rotation=90)
-    ax.set_xticks(x, ordered)
+    ax.set_xticks(x, [CAUSE_LABELS.get(k, k) for k in ordered])
     ax.set_ylabel("Başarısız sürüş sayısı")
     ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: _tr_int(value)))
     ax.margins(y=0.3)
     _style_axes(ax, value_axis="y")
     ax.legend(frameon=True, edgecolor=GRID, loc="upper right")
     _header(fig, ax, "Neden Dağılımı",
-            "SİNYALSİZ çubuğunda taralı üst dilim: bildirim var ama kategori atanamadı")
+            "Kanıt Bulunmayan çubuğunda taralı üst dilim: bildirim var ama kategori atanamadı")
     return _save(fig, out_dir, "scenario_causes.png")
 
 

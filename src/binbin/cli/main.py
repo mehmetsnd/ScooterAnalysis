@@ -2,7 +2,7 @@
 alttaki modüllere paslar.
 
     python -m binbin.cli ingest   [--data-dir data_raw] [--file F] [kapsam]
-    python -m binbin.cli classify [--refresh] [--batch-size 10000] [kapsam]
+    python -m binbin.cli classify [--refresh] [--batch-size 100000] [kapsam]
     python -m binbin.cli assess   [--refresh] [kapsam]
     python -m binbin.cli analyze  [--detay] [--derin] [--false-fault] [--sinyal-denetimi]
                                   [--esik-taramasi] [--charts DIR]
@@ -24,6 +24,7 @@ from pathlib import Path
 
 from binbin.config import DEFAULT_SCOPE, UNRESTRICTED_SCOPE, Scope
 from binbin.reporting.format import (
+    CAUSE_LABELS,
     GROUP_LABELS as _GROUP_LABELS,
     fmt_threshold as _fmt_thr,
     signed_int as _signed_int,
@@ -31,6 +32,7 @@ from binbin.reporting.format import (
     tr_int as _tr_int,
     tr_pct as _tr_pct,
 )
+from binbin.core.scenario_analysis import KANIT_YOK
 from binbin.data.repository import RideRepository
 
 
@@ -86,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_scope_args(p_ing)
 
     p_cls = sub.add_parser("classify", help="Başarısız sürüşleri sınıflandır")
-    p_cls.add_argument("--batch-size", type=int, default=10000)
+    p_cls.add_argument("--batch-size", type=int, default=100000)
     p_cls.add_argument(
         "--refresh", action="store_true",
         help="Tüm başarısız sürüşleri yeniden sınıflandır (varsayılan: yalnız damgalanmamışlar)",
@@ -182,28 +184,37 @@ def _print_rides_ingest_report(report) -> None:
 
 
 def _print_status_ingest_report(report) -> None:
-    print(
-        f"[{report.status}] data_load={report.data_load_id}\n"
-        f"  okunan    : {report.rows_read:,}\n"
-        f"  yazılan   : {report.rows_inserted:,}\n"
-        f"  atlanan   : {report.rows_skipped:,}\n"
-        f"  yeni araç : {report.vehicles_created:,}"
-    )
+    """Sürüş dışı kaynakların ortak raporu; `vehicles_created` yalnız durum defterinde var."""
+    lines = [
+        f"[{report.status}] data_load={report.data_load_id}",
+        f"  okunan    : {report.rows_read:,}",
+        f"  yazılan   : {report.rows_inserted:,}",
+        f"  atlanan   : {report.rows_skipped:,}",
+    ]
+    created = getattr(report, "vehicles_created", None)
+    if created is not None:
+        lines.append(f"  yeni araç : {created:,}")
+    print("\n".join(lines))
     for w in report.warnings:
         print(f"  UYARI: {w}")
 
 
 def _run_ingest_for_kind(kind: str, csv_path: Path, scope: Scope, force: bool) -> None:
-    from binbin.data.ingest import run_ingest
+    from binbin.data.ingest import run_geo_ingest, run_ingest, run_maintenance_ingest
     from binbin.data.ingest_status import run_status_ingest
 
     # Doğrulama tüm dosyalar için önden koştuğu için künye satırı burada tekrarlanır;
     # yoksa çoklu yüklemede hangi raporun hangi dosyaya ait olduğu okunmuyor.
     print(f"\nYükleniyor [{kind}]: {csv_path.name}")
+    runner = {
+        "rides": run_ingest, "status": run_status_ingest,
+        "maintenance": run_maintenance_ingest, "geo": run_geo_ingest,
+    }[kind]
+    report = runner(csv_path, scope, force=force)
     if kind == "rides":
-        _print_rides_ingest_report(run_ingest(csv_path, scope, force=force))
+        _print_rides_ingest_report(report)
     else:
-        _print_status_ingest_report(run_status_ingest(csv_path, scope, force=force))
+        _print_status_ingest_report(report)
 
 
 def _check_schema(kind: str, csv_path: Path) -> None:
@@ -222,7 +233,7 @@ def cmd_ingest(args: argparse.Namespace) -> None:
     (sürüş + araç durum-değişim CSV'si) başlığından otomatik ayırıp sırayla yükler.
     Bir türde birden fazla dosya varsa mevcut `select_csv` seçim/uyarı mantığı kullanılır.
     """
-    from binbin.data.ingest import detect_csv_kind, list_source_csvs
+    from binbin.data.ingest import detect_csv_kind, group_source_csvs, list_source_csvs
 
     scope = _scope_from_args(args)
     files = list_source_csvs(args.data_dir)
@@ -236,13 +247,18 @@ def cmd_ingest(args: argparse.Namespace) -> None:
             raise SystemExit("Hata: data_raw/ içinde .csv yok.")
         # SIRA YÜK TAŞIR: rides ÖNCE. Sürüş ingest'i vehicle'ı plakayla açar; ters sırada
         # araçlar plakasız oluşur ve ON CONFLICT DO NOTHING onları güncellemez → plaka kaybolur.
-        by_kind: dict[str, list[Path]] = {"rides": [], "status": []}
-        for f in files:
-            by_kind[detect_csv_kind(f)].append(f)
+        by_kind, unknown = group_source_csvs(files)
+        for path in unknown:
+            print(f"ATLANDI (ingest'i yok): {path.name}")
+        if not any(by_kind.values()):
+            raise SystemExit("Hata: data_raw/ içinde yüklenebilir CSV yok.")
+        # SIRA BAĞLAYICI: rides ÖNCE (vehicle/ride satırları orada doğar), geo EN SON
+        # (ride_geo bileşik FK ile ride'a bağlıdır).
+        order = ("rides", "status", "maintenance", "geo")
         selected = [
-            (kind, select_csv(kind_files, explicit=None, prompt_fn=prompt_fn))
-            for kind, kind_files in by_kind.items()
-            if kind_files
+            (kind, select_csv(by_kind[kind], explicit=None, prompt_fn=prompt_fn))
+            for kind in order
+            if by_kind.get(kind)
         ]
 
     # Doğrulama HİÇBİR yükleme başlamadan önce biter: sıra rides→status olduğu için
@@ -385,16 +401,6 @@ def cmd_analyze(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------- iki senaryolu okunur çıktı
-_CAUSE_LABELS = {
-    "TEKNIK": "Teknik",
-    "REGULASYON": "Regülasyon",
-    "KULLANICI": "Kullanıcı",
-    "ODEME": "Ödeme",
-    "SISTEM": "Sistem",
-    "SINYALSIZ": "Sinyalsiz",
-}
-
-
 def _scenario_list(report: dict) -> list[dict]:
     return [report["scenarios"][key] for key in report["scenario_order"]]
 
@@ -476,7 +482,7 @@ def _print_scenario_comparisons(report: dict) -> None:
 def _print_scenario_causes(report: dict) -> None:
     """NEDEN DAĞILIMI — kategori × bildirim durumu.
 
-    Neden bildirimli/bildirimsiz ayrılıyor: "Sinyalsiz" kütlesinin ezici çoğunluğunda
+    Neden bildirimli/bildirimsiz ayrılıyor: "Kanıt Bulunmayan" kütlesinin ezici çoğunluğunda
     ortada bir arıza İDDİASI YOKTUR (kimse bildirmemiş, sürüş kısa sürüp bitmiş).
     Olmayan bir bildirimin nedenini açıklayamamak bir eksiklik değildir. Tek bir
     "sinyalsiz %" rakamı bu ikisini birbirine karıştırıp tabloyu olduğundan kötü
@@ -494,11 +500,11 @@ def _print_scenario_causes(report: dict) -> None:
             f"{'Bildirimsiz':>14}{'Değ.dışı':>11}"
         )
         print("─" * 73)
-        unexplained = next((r for r in rows if r["category"] == "SINYALSIZ"), None)
+        unexplained = next((r for r in rows if r["category"] == KANIT_YOK), None)
         for row in rows:
             share = f"{_tr_int(row['reported'])} · {_tr_pct(row['reported_pct'])}"
             print(
-                f"{_CAUSE_LABELS.get(row['category'], row['category']):<16}"
+                f"{CAUSE_LABELS.get(row['category'], row['category']):<16}"
                 f"{_tr_int(row['total']):>10}{share:>22}"
                 f"{_tr_int(row['no_report']):>14}{_tr_int(row['unevaluated']):>11}"
             )
@@ -787,7 +793,7 @@ def _print_category_matrix(report: dict) -> None:
             cells = "".join(
                 f"{_tr_int(row['counts'][v]):>{col_width}}" for v in matrix["verdict_order"]
             )
-            label = _CAUSE_LABELS.get(row["category"], row["category"])
+            label = CAUSE_LABELS.get(row["category"], row["category"])
             print(f"{label:<16}{cells}{_tr_int(row['total']):>10}")
     if len(scenarios) > 1:
         print("\nNot: her senaryo kendi başarısız kümesine göre ayrı hesaplanır.")

@@ -10,6 +10,18 @@ GROUP_LABELS = {
     "bildirimsiz": "Bildirimsiz (kontrol grubu)",
 }
 
+# CLI ve charts AYNI etiketi kullanmalı; kopyalanınca terminal ile PNG sessizce sapar.
+CAUSE_LABELS = {
+    "TEKNIK": "Teknik",
+    "REGULASYON": "Regülasyon",
+    "KULLANICI": "Kullanıcı",
+    "ODEME": "Ödeme",
+    "SISTEM": "Sistem",
+    "ARAC_TARAFI": "Araç tarafı",
+    "KULLANICI_TARAFI": "Kullanıcı tarafı",
+    "KANIT_YOK": "Kanıt Bulunmayan",
+}
+
 
 def tr_int(value) -> str:
     """12345 / 12345.4 → '12.345' (Türkçe binlik ayracı; float'ları yuvarlar)."""
