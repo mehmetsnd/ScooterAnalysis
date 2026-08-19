@@ -25,6 +25,9 @@ from binbin.domain.models import Ride
 # Bir sahte alarm 3 boşa görev doğurur (toplama + atölye + geri bırakma).
 FALSE_ALARM_WASTED_MISSIONS = 3
 
+# GPS gürültüsü altındaki yer değiştirme hareket sayılmaz.
+MOVED_MIN_DISPLACEMENT_M = 5.0
+
 
 @dataclass
 class FaultAssessment:
@@ -90,36 +93,27 @@ def assess_ride(
     comment_text: Optional[str] = None,
     rating: Optional[int] = None,
     field_fault: bool = False,
+    next_ride_different_user: bool = True,
+    displacement_m: Optional[float] = None,
     healthy_min_distance_m: float = 200.0,
-    healthy_max_gap_min: float = 360.0,
+    healthy_max_gap_min: float = 4320.0,
 ) -> FaultAssessment:
     """Arıza bildirimli bir sürüşün şüpheli sahte mi gerçek mi olduğunu hesaplar.
 
-    Kanıt aynı aracın sonraki sürüşüdür: ≤360 dk içinde >200 m gidebilmişse
-    healthy_proof=True — yalnız "araç sonraki kiralamada çalıştı" demektir (kullanıcı
-    aynı mı, arada bakım var mı KONTROL EDİLMEZ). `field_fault` durum defterindeki
-    açık teknik sinyaldir.
+    Kanıt aynı aracın sonraki sürüşüdür: FARKLI bir müşteri ≤4320 dk içinde >200 m
+    gidebilmişse healthy_proof=True (arada bakım var mı KONTROL EDİLMEZ).
+    `field_fault` durum defterindeki açık teknik sinyaldir.
 
-    RATING EŞİĞİ NEDEN 1 (ölçüldü, 2026-08-05): yalnız 1 yıldız kanıt sayılır.
-    Lift ölçümü 2 ve 3 yıldızı ELEDİ — 1★ 5,4x ayırt ederken 2★ 0,4x, 3★ 0,1x
-    çıktı, yani ikisi de başarılı sürüşlerde daha sık. Puan veren başarısız
-    sürüşlerin %95,5'i zaten 1 yıldız veriyor.
-
-    Marjinal etki de küçüktü: 2★'lı 41 başarısız sürüşün 28'inde başka kanıt yoktu,
-    onların da yalnız 7'si yorum yazmıştı. O 7 yorumun yazımları (`kilidi yok`,
-    `cok tekledi`, `lose kocnice`, `sorunlu`…) kelime adayı olarak AYRICA ölçüldü ve
-    hepsi benimseme kuralını GEÇEMEDİ (`kilid` 1,9x · `sorunlu` 0,9x · `tekledi` ve
-    `lose kocnice` hacim yetersiz). Yani bu ifadeler başarılı sürüşlerde de benzer
-    sıklıkta geçiyor; kanıt sayılsalardı yanlış-pozitif üreteceklerdi. Bugün bu 7
-    yorumdan yalnız biri (`wouldnt turn on`) yakalanıyor — geri kalanı bilinçli
-    olarak kanıtsız kalıyor, çünkü ölçüm onları ayırt edici bulmadı. Kalan 21 sessiz
-    2★ ise neden şikayet edildiği hakkında sıfır bilgi taşır.
+    Rating eşiği 1: lift ölçümü 2★ (0,4x) ve 3★'ı (0,1x) eledi, 1★ 5,4x ayırt ediyor.
     """
     report_evidence = _report_evidence(ride, comment_text, rating, field_fault)
     fault_reported = report_evidence is not ClassificationSource.NONE
 
+    # Koordinat varsa fiziksel ölçüm kazanır; yoksa odometreye düşülür.
     vehicle_moved: Optional[bool]
-    if ride.distance_m is None:
+    if displacement_m is not None:
+        vehicle_moved = displacement_m >= MOVED_MIN_DISPLACEMENT_M
+    elif ride.distance_m is None:
         vehicle_moved = None
     else:
         vehicle_moved = ride.distance_m > 0
@@ -143,6 +137,7 @@ def assess_ride(
             and next_distance is not None
             and next_distance > healthy_min_distance_m
             and gap_min <= healthy_max_gap_min
+            and next_ride_different_user
         )
 
     # Hüküm (yukarıdaki öncelik)

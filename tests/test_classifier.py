@@ -156,3 +156,59 @@ def test_field_signal_metinden_once_gelir():
     )
     assert result.reason is FailureReason.CONNECTION_LOST
     assert result.source is ClassificationSource.REASON_CODE
+
+
+def test_komsu_arac_sinyali_arac_tarafi_atar():
+    """Aynı aracı sonraki farklı müşteri de kullanamadıysa → ARAC_TARAFI."""
+    result = classify_ride(_ride(), neighbor_vehicle_fault=True)
+    assert result.category is FailureCategory.ARAC_TARAFI
+    assert result.reason is None
+    assert result.source is ClassificationSource.NEIGHBOR_RIDE
+
+
+def test_komsu_kullanici_sinyali_kullanici_tarafi_atar():
+    """Aynı kullanıcı iki FARKLI araçta üst üste başarısızsa → KULLANICI_TARAFI."""
+    result = classify_ride(_ride(), neighbor_user_fault=True)
+    assert result.category is FailureCategory.KULLANICI_TARAFI
+    assert result.source is ClassificationSource.NEIGHBOR_RIDE
+
+
+def test_komsu_arac_sinyali_kullanicidan_onceliklidir():
+    """İkisi birden varsa araç tarafı kazanır (lift 3,93x > 2,94x)."""
+    result = classify_ride(_ride(), neighbor_vehicle_fault=True, neighbor_user_fault=True)
+    assert result.category is FailureCategory.ARAC_TARAFI
+
+
+def test_metin_komsu_surus_cikarimini_yener():
+    """Metin daha spesifik kanıttır; komşu sürüş çıkarımı adım 9'dur."""
+    result = classify_ride(_ride(end_message="kilit açılmadı"), neighbor_vehicle_fault=True)
+    assert result.category is FailureCategory.TEKNIK
+    assert result.source is ClassificationSource.TEXT_MESSAGE
+
+
+def test_komsu_sinyali_yalniz_basarisiz_surusleri_etkiler():
+    """Başarılı sürüşe komşu sinyali de kategori atamaz."""
+    result = classify_ride(_ride(outcome=RideOutcome.BASARILI), neighbor_vehicle_fault=True)
+    assert result == (None, None, ClassificationSource.NONE)
+
+
+def test_maintenance_signal_assigns_vehicle_side():
+    """Sürüşten sonraki 24sa içinde bakım bildirimi → ARAC_TARAFI.
+    Hangi arızanın sürüşü bozduğu ATANMAZ: aynı ziyarette ortalama 3 tip kaydediliyor."""
+    result = classify_ride(_ride(), maintenance_fault=True)
+    assert result.category is FailureCategory.ARAC_TARAFI
+    assert result.reason is None
+    assert result.source is ClassificationSource.MAINTENANCE
+
+
+def test_maintenance_signal_beats_neighbor_ride():
+    """Bakım bildirimi (lift 4,94x) komşu sürüş çıkarımından (3,93x) güçlüdür."""
+    result = classify_ride(_ride(), maintenance_fault=True, neighbor_vehicle_fault=True)
+    assert result.source is ClassificationSource.MAINTENANCE
+
+
+def test_text_beats_maintenance_signal():
+    """Metin hangi arızanın olduğunu söyler; bakım yalnız 'araçta bir sorun vardı' der."""
+    result = classify_ride(_ride(end_message="kilit açılmadı"), maintenance_fault=True)
+    assert result.category is FailureCategory.TEKNIK
+    assert result.source is ClassificationSource.TEXT_MESSAGE

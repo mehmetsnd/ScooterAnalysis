@@ -83,11 +83,30 @@ def test_regulasyon_suphesi_atanmaz_hareket_varsa():
 
 
 def test_healthy_proof_gap_asiminda_bozulur():
-    """Sonraki sürüş 6 saatten geç ise sağlam-kanıt sayılmaz."""
-    a = assess_ride(_ride(), _next(ok=True, distance_m=800.0, gap_min=400),
+    """Sonraki sürüş 72 saatten geç ise sağlam-kanıt sayılmaz."""
+    a = assess_ride(_ride(), _next(ok=True, distance_m=800.0, gap_min=4400),
                     comment_text="araç bozuk")
     assert a.healthy_proof is False
     assert a.verdict is FaultVerdict.GERCEK_ARIZA_SUPHESI
+
+
+def test_healthy_proof_72_saate_kadar_gecerlidir():
+    """Sonraki sürüş 6 saati aşsa da 72 saat içindeyse sağlam-kanıt sayılır.
+
+    Eşik 360 dk iken bu sürüş GERCEK_ARIZA_SUPHESI'ne düşüyordu; saha bakım
+    döngüsü 72 saat olduğu için o pencere fazla dardı.
+    """
+    a = assess_ride(_ride(), _next(ok=True, distance_m=800.0, gap_min=4000),
+                    comment_text="araç bozuk")
+    assert a.healthy_proof is True
+    assert a.verdict is FaultVerdict.SAHTE_ALARM_SUPHESI
+
+
+def test_healthy_proof_gap_siniri_tam_72_saatte_dahildir():
+    """Sınır dahil: tam 4320 dk (72 sa) hâlâ sağlam-kanıttır."""
+    a = assess_ride(_ride(), _next(ok=True, distance_m=800.0, gap_min=4320),
+                    comment_text="araç bozuk")
+    assert a.healthy_proof is True
 
 
 def test_puan_bir_arica_bildirimi_sayilir():
@@ -119,3 +138,30 @@ def test_field_fault_metin_kanitindan_sonra_gelir():
         comment_text="araç çalışmıyor", field_fault=True,
     )
     assert a.report_evidence is ClassificationSource.TEXT_COMMENT
+
+
+def test_healthy_proof_ayni_musteri_ile_bozulur():
+    """Aynı müşteri tekrar deneyip başardıysa cihazın sağlamlığı kanıtlanmış olmaz."""
+    a = assess_ride(_ride(), _next(ok=True, distance_m=800.0),
+                    comment_text="araç bozuk", next_ride_different_user=False)
+    assert a.healthy_proof is False
+    assert a.verdict is FaultVerdict.GERCEK_ARIZA_SUPHESI
+
+
+def test_healthy_proof_farkli_musteri_ile_gecerlidir():
+    """Farklı müşteri aynı cihazı sorunsuz kullandıysa sağlam-kanıt güçlüdür."""
+    a = assess_ride(_ride(), _next(ok=True, distance_m=800.0),
+                    comment_text="araç bozuk", next_ride_different_user=True)
+    assert a.healthy_proof is True
+
+
+def test_vehicle_moved_uses_measured_displacement_when_available():
+    """Koordinat varsa vehicle_moved odometre çıkarımı değil FİZİKSEL ölçümdür."""
+    a = assess_ride(_ride(distance_m=140.0), _next(), displacement_m=3.0)
+    assert a.vehicle_moved is False
+
+
+def test_vehicle_moved_falls_back_to_odometer_without_coordinates():
+    """Koordinat yoksa (sürüşlerin %3,8'i) eski davranış korunur."""
+    a = assess_ride(_ride(distance_m=140.0), _next(), displacement_m=None)
+    assert a.vehicle_moved is True

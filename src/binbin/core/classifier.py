@@ -10,7 +10,8 @@ sürüşlere kategori atar. Öncelik (ilk uyan kazanır):
   6. durum-defteri arıza sinyali      -> field_category (REASON_CODE)
   7. end_message text -> keywords     -> (TEXT_MESSAGE)
   8. comment_text -> keywords         -> (TEXT_COMMENT)
-  9. eşleşme yok                      -> None (Sinyalsiz)
+  9. bakım kaydı / komşu sürüş        -> ARAC_TARAFI / KULLANICI_TARAFI (MAINTENANCE, NEIGHBOR_RIDE)
+ 10. eşleşme yok                      -> None (Kanıt Yok)
 
 1-5 mevcut CSV'de %100 NULL; kod null-safe ve ileriye dönük. Adım 6'yı data katmanı
 `field_category`/`field_reason` olarak besler; kural kitabında NULL bırakılmış belirsiz
@@ -90,6 +91,9 @@ def classify_ride(
     comment_text: Optional[str] = None,
     field_category: Optional[FailureCategory] = None,
     field_reason: Optional[FailureReason] = None,
+    maintenance_fault: bool = False,
+    neighbor_vehicle_fault: bool = False,
+    neighbor_user_fault: bool = False,
 ) -> ClassificationResult:
     """Tek bir sürüş objesini alır, sinyallerini tarar ve kategorize eder.
 
@@ -151,5 +155,16 @@ def classify_ride(
         if result is not None:
             return result
 
-    # 9. Sinyalsiz → kategori UYDURMA
+    # 9. Araç tarafı kanıtları — hangi arıza olduğunu DEĞİL, sorunun tarafını verir.
+    if maintenance_fault:
+        return ClassificationResult(
+            FailureCategory.ARAC_TARAFI, None, ClassificationSource.MAINTENANCE
+        )
+    src = ClassificationSource.NEIGHBOR_RIDE
+    if neighbor_vehicle_fault:
+        return ClassificationResult(FailureCategory.ARAC_TARAFI, None, src)
+    if neighbor_user_fault:
+        return ClassificationResult(FailureCategory.KULLANICI_TARAFI, None, src)
+
+    # 10. Kanıt yok → kategori UYDURMA
     return _NONE_RESULT
