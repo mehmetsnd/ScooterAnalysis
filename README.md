@@ -19,7 +19,7 @@ değil **"ŞÜPHELİ"** — veri kesin hüküm veremez.
   sqlalchemy, psycopg, matplotlib, python-dotenv, pytest. (Pandas KULLANILMAZ — büyük
   CSV RAM'e alınmaz, `COPY` ile stream edilir.) Proje kurulmaz, `PYTHONPATH=src` ile çalışır.
 - Python komutları daima `.venv` ile: `.\.venv\Scripts\python.exe -m pytest tests -q`.
-- DB şeması `db/01`→`db/08` sırasıyla PostgreSQL'de elle kurulur (aylık partition'lı
+- DB şeması tek dosyayla kurulur: `db/01_setup.sql` (aylık partition'lı
   `ride`/`fleet_status_event`, bileşik FK'ler, view'ler, kural kitabı seed'i).
 - `.env.example` → `.env` kopyalayıp `DATABASE_URL`'i doldur.
 - Ham CSV `data_raw/` klasörüne konur (`.gitignore`'da).
@@ -70,15 +70,15 @@ Ingest sonrası DB doğrulama: `country`=3, `city`≥2 (is_test hariç),
 `mongo_distance_meters` kolonudur. `distance_meters` ve `distance` analiz
 kararlarında kullanılmaz; mongo alanı boşsa değer `NULL` kalır.
 
-Mongo mesafesiyle yeniden ingest öncesinde `db/01_reset_ve_kurulum.sql`
+Mongo mesafesiyle yeniden ingest öncesinde `db/01_setup.sql`
 çalıştırılmamalıdır; o betik tüm `public` şemasını silip yeniden kurar. Tablo,
 enum, indeks, partition ve referans/config kayıtlarını koruyarak yalnız operasyonel
 veriyi temizlemek için sırasıyla:
 
 ```text
-db/03_pre_data_reset_check.sql      # salt okunur mevcut durum/audit
-db/04_reset_operational_data.sql    # ride, feedback, assessment, load, staging
-db/05_post_data_reset_check.sql     # tablolar boş, şema/partition/config sağlam mı
+db/reset/01_pre_data_reset_check.sql          # salt okunur mevcut durum/audit
+db/reset/02_reset_operational_data.sql        # ride, feedback, assessment, load, staging
+db/reset/03_post_data_reset_check.sql         # tablolar boş, şema/partition/config sağlam mı
 ```
 
 Reset sonrasında tüm CSV'leri yeniden `ingest` et; ardından `classify --refresh`
@@ -122,14 +122,11 @@ src/binbin/
 └── cli/         # main.py — TEK giriş noktası (ingest/classify/assess/analyze/loads)
 
 db/              # PostgreSQL şeması (elle çalıştırılır)
-├── 01_reset_ve_kurulum.sql
-├── 02_false_fault.sql
-├── 03_pre_data_reset_check.sql
-├── 04_reset_operational_data.sql
-├── 05_post_data_reset_check.sql
-├── 06_vehicle_status.sql
-├── 07_signal_rulebook_revision.sql
-├── 08_align_persisted_with_current_rule.sql
+├── 01_setup.sql            # TEK kurulum dosyası — şema + false_fault + durum defteri
+└── reset/                  # kurulumun parçası DEĞİL: operasyonel veri sıfırlama
+    ├── 01_pre_data_reset_check.sql
+    ├── 02_reset_operational_data.sql
+    └── 03_post_data_reset_check.sql
 ```
 
 Veri kaynağı soyutlaması `repository.py` Protocol'ü ile tanımlanır; tek somut
