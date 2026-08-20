@@ -1,136 +1,259 @@
-# Binbin — Başarısız Sürüş Analizi + Şüpheli Arıza Alarmı
+# BinBin — Başarısız Sürüş Analizi ve Şüpheli Arıza Alarmı
 
-Paylaşımlı scooter sürüşlerinde başarısızlık nedenlerinin analizi ve projenin ana
-çıktısı olan **şüpheli (sahte) arıza alarmı** ölçümü. Katmanlı mimari, functional
-core / imperative shell: `cli / reporting → core → data → domain`, veri kaynağı
-Repository deseniyle pluggable (`data/`).
+Paylaşımlı e-scooter sürüşlerinde **başarısızlık nedenlerini** sınıflandıran ve projenin
+ana çıktısı olan **şüpheli (sahte) arıza alarmı** ölçümünü üreten katmanlı Python CLI'ı.
 
-**Bu proje YALNIZCA CLI'dır.** Web katmanı (FastAPI/Plotly) fikri terk edildi ve
-silindi; çıktı terminal + opsiyonel PNG grafiklerdir.
+**İş problemi.** Çalışan bir cihaz "arızalı" bildirildiğinde üç fiziksel operasyon
+tetiklenir: sahadan toplama → atölye kontrolü → sahaya geri bırakma. Bildirim yersizse
+bu üç görev boşa çalışır ve o sırada gerçekten arızalı araçlar sahada müşteri bekletir.
+Bu proje o kaybı ölçer.
 
-**Ana iş problemi:** Çalışan bir cihaz "arızalı" bildirilirse 3 boşa görev doğar
-(sahadan toplama → atölye kontrolü → sahaya geri bırakma). Bu sırada gerçekten
-arızalı araçlar sahada bekler. Amaç bunu ölçmek. Adlandırma disiplini: "SAHTE"
-değil **"ŞÜPHELİ"** — veri kesin hüküm veremez.
+**Adlandırma disiplini.** Çıktılar "SAHTE" değil **"ŞÜPHELİ"** der. Mevcut veri kesin
+hüküm veremez; sistem bir *iddia* üretir, bir *yargı* değil.
 
-## Kurulum notları
+---
 
-- Sanal ortam elle kurulur (`.venv`); bağımlılıkların tek kaynağı `requirements.txt`:
-  sqlalchemy, psycopg, matplotlib, python-dotenv, pytest. (Pandas KULLANILMAZ — büyük
-  CSV RAM'e alınmaz, `COPY` ile stream edilir.) Proje kurulmaz, `PYTHONPATH=src` ile çalışır.
-- Python komutları daima `.venv` ile: `.\.venv\Scripts\python.exe -m pytest tests -q`.
-- DB şeması tek dosyayla kurulur: `db/01_setup.sql` (aylık partition'lı
-  `ride`/`fleet_status_event`, bileşik FK'ler, view'ler, kural kitabı seed'i).
-- `.env.example` → `.env` kopyalayıp `DATABASE_URL`'i doldur.
-- Ham CSV `data_raw/` klasörüne konur (`.gitignore`'da).
+## Hızlı başlangıç
+
+```powershell
+# 1) Sanal ortam (proje kurulmaz; src-layout + PYTHONPATH ile çalışır)
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+
+# 2) Veritabanı: PostgreSQL 18, tek dosyayla kurulur
+#    pgAdmin Query Tool'da hedef veritabanı seçili iken db/01_setup.sql'in TAMAMINI çalıştır.
+
+# 3) Bağlantı
+Copy-Item .env.example .env       # DATABASE_URL'i doldur
+
+# 4) Ham CSV'leri data_raw/ altına koy (git-ignored)
+
+# 5) Uçtan uca pipeline
+.\run.ps1 -WiDuration 150 -WiDistance 70
+```
+
+> ⚠️ Python komutları **daima** `.venv` ile çalıştırılır:
+> `.\.venv\Scripts\python.exe`. Sistem Python'ında `pytest` "no tests collected"
+> deyip testleri koşmadan sessizce geçer.
+
+---
+
+## Veri kaynakları
+
+`ingest` CSV türünü **başlık satırından** tanır ve her türü kendi dönüştürücüsüne
+yönlendirir. Tanımadığı dosyayı atlar; tanıdığı bir dosyanın başlığı bozuksa **durur**.
+
+| # | Kaynak | Hedef tablolar | Kanıt katkısı |
+|---|---|---|---|
+| 1 | Sürüş kaydı (~1,03M) | `ride`, `feedback` | Telemetri + serbest metin |
+| 2 | Araç durum-değişim defteri (4,17M) | `fleet_status_event`, `fleet_status_reason` | `REASON_CODE` — açık teknik arıza sinyali |
+| 3 | Bakım geçmişi (112.787) | `maintenance_event`, `damage_sub_type` | `MAINTENANCE` — sürüşten sonraki 24 sa içinde bakım kaydı |
+| 4 | Koordinat / geofence (991.709) | `ride_geo`, `geofence` | `displacement_m` — odometreden bağımsız hareket kanıtı |
+
+Bunlara ek olarak **komşu sürüş** sinyali (`NEIGHBOR_RIDE`) aynı aracın veya aynı
+kullanıcının komşu sürüşünden türetilir; problemin *tarafını* verir, alt türünü değil.
+
+**Ölçülmüş sınır.** (2) numaralı defter bir araç-tarafı IoT durum makinesidir ve
+taksonomideki beş kategoriden yalnız TEKNIK'i görebilir. Başarısız sürüşlerin %100'ünün
+penceresinde olay vardır ama %88'inde bu olaylar yalnızca muhasebe kaydıdır. Kategori
+atanamayan kütleyi asıl düşürecek olan bu defter değil, (1)'deki NULL telemetri
+kolonlarının doldurulması ve uygulama/ödeme loglarıdır.
+
+---
+
+## Komutlar
+
+```powershell
+$env:PYTHONPATH = "src"
+
+python -m pytest tests/ -q                     # 319 test, tamamı DB'siz
+
+python -m binbin.cli ingest                    # CSV'leri türüne göre yükler
+python -m binbin.cli classify --refresh        # başarısız sürüşleri sınıflandırır
+python -m binbin.cli assess   --refresh        # şüpheli arıza değerlendirmesi
+python -m binbin.cli loads                     # yükleme denetim kaydı
+
+python -m binbin.cli analyze --false-fault --detay --derin `
+    --sinyal-denetimi --esik-taramasi --kelime-denetimi `
+    --charts out --wi-duration 150 --wi-distance 70
+```
+
+`analyze` **yazmaz**; her çağrıda timeline'ı okuyup Python'da toplar.
+
+### `analyze` bayrakları
+
+| Bayrak | Ne yapar |
+|---|---|
+| `--false-fault` | Şüpheli arıza özeti + Kategori-Sonuç Matrisi + Teknik Arıza Kırılımı |
+| `--detay` | Araç ve alt bölge sıcak noktaları |
+| `--derin` | Saatlik yerel dağılım (şehir başına küçük çoklular) |
+| `--esik-taramasi` | 5×5 süre/mesafe ızgarasını F1 ile tarar, iki eşik senaryosu çıkarır |
+| `--sinyal-denetimi` | Kural kitabındaki 58 kodun ayırt ediciliğini (lift) ölçer |
+| `--kelime-denetimi` | Anahtar kelime kümesinin ayırt ediciliğini (lift) ölçer |
+| `--charts DIR` | PNG grafikleri üretir |
+| `--wi-duration` + `--wi-distance` | Özel Kural senaryosu ekler (**birlikte** verilmeli) |
+
+---
 
 ## Kapsam (scope)
 
-İşlenen veri bu adımda **yalnızca Türkiye + İstanbul**'dur, ama bu koda gömülü
-değildir — `config.py:DEFAULT_SCOPE` tek kaynaktır. Tüm komutlar aynı semantiği
-paylaşır:
+Kapsam koda gömülü değildir; `config.py:DEFAULT_SCOPE` tek kaynaktır. Tüm komutlar
+aynı semantiği paylaşır:
 
-- bayrak yok → `DEFAULT_SCOPE` (Türkiye + İstanbul Avrupa/Anadolu)
-- `--country AD` / `--city AD` (tekrarlanabilir) → verilen kapsam
-- `--all` → filtre yok (tüm veri); `--country/--city` ile birlikte verilemez
+- bayrak yok → `DEFAULT_SCOPE` (Türkiye + İstanbul Avrupa/Anadolu) — **tüm veri değil**
+- `--country AD` / `--city AD` (tekrarlanabilir) → verilen kapsam; birlikte VE olarak uygulanır
+- `--all` → filtre yok; `--country`/`--city` ile birlikte verilemez
 
-## Çalıştırma (src-layout, kurulumsuz)
+Çözülemeyen ad **hata verir** (exit 1), sessizce boş sonuç üretmez. Kısmî eşleşme de
+hatadır: iki şehirden biri tutmazsa veri sessizce yarıya inerdi. Yazım hatalarında
+`difflib` en yakın adı önerir.
 
-```powershell
-# PowerShell — önce .venv aktive et, sonra:
-$env:PYTHONPATH = "src"
+> `ingest_status` kapsamı **yok sayar** — `stg_status_raw`'da ülke/şehir kolonu yoktur;
+> defter daima filo genelinde yüklenir. `run.ps1` bunu uyarır.
 
-# Testler (DB'siz, hepsi yeşil)
-python -m pytest tests/ -q
-
-# Uçtan uca akış (Postgres gerekir): ingest → classify → assess → analyze
-.\run.ps1  # param yoksa interaktif sorar; Özel Kural varsayılanı 75 sn / 60 m
-
-# Otomasyon veya tekrar üretilebilir bir çalışma için değerler doğrudan verilebilir:
-.\run.ps1 -WiDuration 75 -WiDistance 60
-
-# Yalnız analizi doğrudan çalıştırmak için (iki senaryo birlikte raporlanır):
-#   Mevcut Kural = kaynak BASARISIZ_HARD veya 120 sn/60 m
-#   Özel Kural   = kaynak etiketi yok sayılır; yalnız CLI'daki eşik uygulanır
-python -m binbin.cli analyze --wi-duration 75 --wi-distance 60 \
-  --false-fault --detay --derin --sinyal-denetimi --esik-taramasi --kelime-denetimi --charts out
-
-# Kapsam: bayraksız = DEFAULT_SCOPE (Türkiye + İstanbul), TÜM VERİ DEĞİL.
-# Ad çözülemezse sessiz boş sonuç yerine öneri içeren hata verilir (exit 1).
-python -m binbin.cli analyze --city "İstanbul Avrupa" --city Bursa
-.\run.ps1 -City "İstanbul Avrupa","Bursa"     # aynı pipeline, şehir kapsamıyla
-```
-
-Ingest sonrası DB doğrulama: `country`=3, `city`≥2 (is_test hariç),
-`SELECT count(*) FROM ride_default` = 0, `data_load.status='SUCCESS'`.
-
-## Mesafe kaynağı ve veri-only reset
-
-`ride.distance_m` alanının tek kanonik kaynağı CSV'deki
-`mongo_distance_meters` kolonudur. `distance_meters` ve `distance` analiz
-kararlarında kullanılmaz; mongo alanı boşsa değer `NULL` kalır.
-
-Mongo mesafesiyle yeniden ingest öncesinde `db/01_setup.sql`
-çalıştırılmamalıdır; o betik tüm `public` şemasını silip yeniden kurar. Tablo,
-enum, indeks, partition ve referans/config kayıtlarını koruyarak yalnız operasyonel
-veriyi temizlemek için sırasıyla:
-
-```text
-db/reset/01_pre_data_reset_check.sql          # salt okunur mevcut durum/audit
-db/reset/02_reset_operational_data.sql        # ride, feedback, assessment, load, staging
-db/reset/03_post_data_reset_check.sql         # tablolar boş, şema/partition/config sağlam mı
-```
-
-Reset sonrasında tüm CSV'leri yeniden `ingest` et; ardından `classify --refresh`
-ve `assess --refresh` çalıştır.
+---
 
 ## Başarısızlık senaryoları
 
-Analiz, özel eşikler verildiğinde aynı sürüş kümesini iki kuralla karşılaştırır:
+Analiz aynı sürüş kümesini iki kuralla değerlendirir:
 
-- **Mevcut Kural:** kaynak `BASARISIZ_HARD` veya 120 sn/60 m eşiğine uyan sürüş.
-- **Özel Kural:** kaynak outcome yok sayılır; yalnız CLI'daki özel eşik uygulanır.
+- **Mevcut Kural** — kaynak `BASARISIZ_HARD` **veya** (süre < 120 sn **VE** mesafe < 60 m)
+- **Özel Kural** — kaynak etiketi yok sayılır; yalnız CLI'daki eşik uygulanır
 
-CLI; her senaryonun başarısızlık oranını ve `Mevcut Kural → Özel Kural` geçişi için
-başarısız→başarılı, başarılı→başarısız, net adet ve yüzde-puan farklarını gösterir.
-Özel Kural'da süre veya mongo mesafesi eksik sürüşler başarılı sayılmaz;
-`değerlendirilemedi` olarak ayrı raporlanır.
+Kural **daima AND**'dir: kısa ama mesafeli bir sürüş başarısız sayılmaz. Özel Kural'da
+ölçümü eksik sürüşler başarılı sayılmaz, `değerlendirilemedi` olarak ayrı raporlanır.
 
-`--wi-duration`/`--wi-distance` **BİRLİKTE** verilmelidir; yalnız biri verilirse
-net hata döner. `--esik-taramasi` bayrağı, Mevcut Kural (120/60) çevresinde dar bir
-ızgarayı (90–150 sn × 40–80 m) F1 skoruyla tarayıp iki alternatif eşik senaryosu
-önerir — ayrıntı için `CLAUDE.md`'deki "EŞİK TARAMASI" bölümüne bakın.
+`--esik-taramasi` bu kuralın çevresinde dar bir ızgarayı (süre 90–150 sn × mesafe
+40–80 m) F1 ile tarar ve iki alternatif senaryo çıkarır. Tarama **eşik önermez** —
+isabet ızgaranın tamamında neredeyse sabittir, dolayısıyla hiçbir eşik teşhisi
+iyileştirmez; yalnız neye bakıldığının kapsamını ve hacmini değiştirir. Seçim bir
+maliyet dengesi sorusudur ve `ops_cost_model` dolana kadar TL'ye çevrilemez.
 
-## Yapı
+---
+
+## Mimari
+
+Functional core / imperative shell. Bağımlılık yönü: **`cli / reporting → core → data → domain`**.
+`core/` saftır (I/O yok); DB ve dosya yan etkileri yalnız shell'dedir.
 
 ```
 src/binbin/
-├── config.py    # DEFAULT_SCOPE — kapsamın TEK kaynağı
-├── domain/      # saf veri: enums.py, models.py (şemayla birebir)
-├── data/        # katmanlı veri erişimi
-│   ├── repository.py    # Protocol (arayüz kontratı — DIP)
-│   ├── engine.py         # Engine + scope derleyici + sinyal-join SQL
-│   ├── queries.py        # okuma sorguları (serbest fonksiyonlar)
-│   ├── classify.py       # yazma: sınıflandırma
-│   ├── assess.py         # yazma: sahte arıza değerlendirmesi
-│   ├── postgres_repo.py  # ince Protocol impl (yukarıdakilere delege)
-│   ├── ingest.py         # sürüş CSV → Postgres ETL
-│   └── ingest_status.py  # araç durum-değişim CSV → Postgres ETL
-├── core/        # SAF çekirdek (I/O yok): classifier, false_fault, keywords,
-│                # scenario_analysis, threshold_scan, signal_audit, keyword_audit
-├── reporting/   # charts.py (matplotlib PNG), format.py (ortak biçimleyiciler)
-└── cli/         # main.py — TEK giriş noktası (ingest/classify/assess/analyze/loads)
-
-db/              # PostgreSQL şeması (elle çalıştırılır)
-├── 01_setup.sql            # TEK kurulum dosyası — şema + false_fault + durum defteri
-└── reset/                  # kurulumun parçası DEĞİL: operasyonel veri sıfırlama
-    ├── 01_pre_data_reset_check.sql
-    ├── 02_reset_operational_data.sql
-    └── 03_post_data_reset_check.sql
+├── config.py             # DEFAULT_SCOPE, pencere sabitleri, sürüm damgaları
+├── domain/               # saf DTO'lar: enums.py, models.py
+├── core/                 # SAF çekirdek — tek karar yeri
+│   ├── classifier.py         # classify_ride — kategori ataması (öncelik zinciri)
+│   ├── false_fault.py        # assess_ride  — verdict + hipotez
+│   ├── scenario_analysis.py  # canlı analiz motoru (yazmasız, tek geçiş)
+│   ├── threshold_scan.py     # eşik taraması (F1 ızgarası)
+│   ├── keywords.py           # çok dilli anahtar kelime kural kitabı
+│   ├── signal_audit.py       # kod ayırt ediciliği (lift)
+│   ├── keyword_audit.py      # kelime ayırt ediciliği (lift)
+│   └── ratios.py             # iki motorun paylaştığı saf yardımcılar
+├── data/                 # Repository deseni (DIP)
+│   ├── repository.py         # Protocol'ler + AnalysisScope
+│   ├── engine.py             # Engine, scope derleyici, paylaşılan join SQL'leri
+│   ├── queries.py            # okuma tarafı
+│   ├── classify.py           # yazma: sınıflandırma
+│   ├── assess.py             # yazma: şüpheli arıza değerlendirmesi
+│   ├── ingest.py             # sürüş + bakım + geo CSV → Postgres (COPY ETL)
+│   ├── ingest_status.py      # durum-değişim CSV → Postgres
+│   └── postgres_repo.py      # ince Protocol implementasyonu
+├── reporting/            # charts.py (matplotlib PNG), format.py (ortak biçimleyiciler)
+└── cli/main.py           # argparse — TEK giriş noktası
 ```
 
-Veri kaynağı soyutlaması `repository.py` Protocol'ü ile tanımlanır; tek somut
-implementasyon `PostgresRideRepository`'dir. Testler DB'ye bağlanmadan inline
-`_FakeRepo` duck-typing ile bu kontratı doğrular.
+**Bu proje yalnızca CLI'dır.** Erken safhadaki web katmanı fikri (FastAPI + Plotly)
+terk edildi ve silindi; çıktı terminal + opsiyonel PNG'dir.
 
-Daha ayrıntılı mimari/konvansiyon dokümantasyonu için `CLAUDE.md`'ye bakın.
+### Sınıflandırma öncelik zinciri
+
+Telemetri (1–5) → durum defteri sinyali (6) → sürüş mesajı (7) → kullanıcı yorumu (8)
+→ bakım kaydı (9) → komşu sürüş (10) → **KANIT_YOK**.
+
+Kategori **tahmin edilmez**. Atanamayan başarısızlık NULL kalır ve "Kanıt Bulunmayan"
+olarak şeffaf raporlanır.
+
+---
+
+## Veritabanı
+
+Şema Python'da **kurulmaz**; PostgreSQL'de elle çalıştırılan SQL'de yaşar.
+
+```
+db/
+├── 01_setup.sql          # TEK kurulum dosyası — dört bölüm, sıra kararı yok
+└── reset/                # kurulumun parçası DEĞİL: operasyonel veri sıfırlama
+    ├── 01_pre_data_reset_check.sql    # salt okunur mevcut durum
+    ├── 02_reset_operational_data.sql  # TRUNCATE (tablo/partition SİLMEZ, CASCADE yok)
+    └── 03_post_data_reset_check.sql   # şema/partition/config sağlam mı
+```
+
+- **Ayrı migration dosyası açılmaz.** Yeni tablo/kolon veya kural kitabı revizyonu
+  doğrudan `01_setup.sql`'e işlenir; kuran kişi daima projenin son hâlini alır.
+- **Partition:** `ride`, `fleet_status_event` ve `maintenance_event` aylık RANGE
+  partition'lıdır. PK partition anahtarını içerir → bağlı tablolar bileşik FK kullanır.
+  `*_default` partition **daima boş** olmalıdır.
+- **CASCADE bilinçli kullanılmaz.** Bunun bedeli: `ride`/`data_load`'a FK ile bağlı her
+  tablo TRUNCATE listesinde bulunmalıdır, yoksa Postgres komutu tamamen reddeder.
+
+Reset sonrası sırayla: `ingest` → `classify --refresh` → `assess --refresh`.
+
+---
+
+## Konvansiyonlar
+
+- **`duration_sec` hesaplanır** (end − start). CSV'deki `duration` (dakika) tutarsız
+  yuvarlanır, kullanılmaz.
+- **`distance_m` kanonik kaynağı `mongo_distance_meters`**'dir. `distance_meters` ve
+  `distance` analiz kararında kullanılmaz (test bunu korur).
+- **`is_test` filtresi:** `region_id=8` ("Test") gerçek sürüş değildir; tüm analiz
+  daima `ci.is_test = false` filtreler.
+- **Out-of-content:** mesafe > 20 km veya süre ≥ 6 sa → analizden dışlanır, ayrı kovada sayılır.
+- **Timezone:** ham timestamp daima `Europe/Istanbul`; analiz yerel saate
+  `AT TIME ZONE country.timezone` ile çevirir.
+- **SQL güvenlik sözleşmesi:** değerler daima `:param` bind; identifier'lar sabit
+  literal veya allowlist.
+- **Dil kuralı:** tanımlayıcılar İngilizce, yorum ve kullanıcıya görünen metin Türkçe.
+- **`ops_cost_model` boştur:** maliyet parametresi gelene kadar analiz "N boşa görev"
+  der, "Y TL" **demez**.
+
+---
+
+## Test
+
+```powershell
+$env:PYTHONPATH = "src"; python -m pytest tests/ -q     # 319 test
+```
+
+Test paketi **veritabanı gerektirmez** — Repository Protocol'ü fake/mock ile
+karşılanır. Bu, `core/`'un saf tutulmasının doğrudan karşılığıdır.
+
+Testler yalnız davranışı değil sözleşmeleri de kilitler: CSV şema sözleşmesi
+`db/01_setup.sql` DDL'ine karşı, 120/60 eşiği Python sabiti ile SQL kısıtı arasında,
+reset scriptleri `db/` klasör yapısına karşı doğrulanır.
+
+---
+
+## Performans
+
+Ölçekleme ekseni satır sayısı değil **veri kaynağı sayısıdır**: her yeni CSV, tüm veri
+kütlesi üzerinde bir join daha demektir. Bakım ve geofence kaynakları eklendiğinde ana
+sorgu 2,8 → 17 sn'ye çıktı.
+
+Uygulanan düzeltmeler (sıra önemlidir):
+
+1. **Kapsam predikatı `ride.city_id`'ye taşındı.** `city` join'i üzerinden verildiğinde
+   planlayıcı satır sayısını 79 kat şaşırıp nested loop seçiyordu.
+2. **`DB_WORK_MEM = 128MB`** — pencere sıralamalarının disk dökümünü kaldırır. Bu ayar
+   tek başına işe yaramaz; bağlayıcı kısıt önce (1) ile düzelmelidir.
+
+Kalan darboğaz sunucuda değil, satırların Python'a taşınmasındadır. Ayrıntılı ölçümler
+ve bir sonraki adımın gerekçesi `CLAUDE.md`'nin performans bölümündedir.
+
+---
+
+## Belgeler
+
+- **`CLAUDE.md`** — ayrıntılı mimari, altın kurallar, ölçüm kayıtları ve tuzaklar.
+- **`docs/`** — teknik rapor (HTML kaynak + PDF). Gerçek operasyonel rakamlar içerdiği
+  için repoya dahil edilmez; `build_report.ps1` ile PDF basılır.
